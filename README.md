@@ -10,11 +10,13 @@ A small Linux push-to-toggle dictation MVP.
 - `paplay` for feedback sounds, and `playerctl` for media pause/resume
 - A working ALSA/PulseAudio recording and playback device
 - A Groq API key with access to speech-to-text
+- An IsoQuant API key for GLM-5.3-Flash transcript cleanup
 
 ## Run
 
 ```sh
 export GROQ_API_KEY='your-new-key'
+export ISO_QUANT_API_KEY='your-isoquant-key'
 cargo run --release
 ```
 
@@ -23,8 +25,24 @@ load `.env`. On Wayland, configure the compositor shortcut below first.
 
 Press **Super+Space** to start recording. A high click indicates recording has
 started; a low click indicates it has stopped. The WAV is sent to
-`whisper-large-v3-turbo`, then the transcript is pasted into the focused
+`whisper-large-v3-turbo`, then cleaned with IsoQuant's `glm-5.3-flash` and pasted into the focused
 application and Enter is pressed.
+
+Cleanup removes filler sounds, accidental repeated words and phrases, and false
+starts, while preserving meaning, language, and intentional emphasis. The short
+system prompt is in `src/cleanup.rs`. Cleanup has a 30-second timeout; on an API
+error, Hydra inserts the original transcript. Empty cleaned text is not inserted
+and does not send Enter. Both original and cleaned transcripts appear in logs.
+
+Test cleanup without recording or typing into another application:
+
+```sh
+printf '%s' 'Um, I I need to call, uh, call Sam tomorrow.' | ./target/release/hydra --cleanup
+```
+
+The prompt follows the conservative cleanup approach used in
+[Fluent](https://github.com/inhaq/fluent) and this
+[community dictation prompt](https://gist.github.com/travisjhicks/c11d6e85a912c6c436daca3c7afe12b2).
 
 To inspect the speech models available to the configured Groq account:
 

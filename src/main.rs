@@ -1,3 +1,4 @@
+mod cleanup;
 mod control;
 mod logging;
 mod media;
@@ -19,7 +20,7 @@ use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
 use std::{
     env, fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::Stdio,
     process::{Child, Command},
@@ -80,6 +81,13 @@ async fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
+    if env::args().any(|arg| arg == "--cleanup") {
+        let cleaner = cleanup::Cleaner::from_env()?;
+        let mut text = String::new();
+        std::io::stdin().read_to_string(&mut text)?;
+        println!("{}", cleaner.clean(&reqwest::Client::new(), &text).await?);
+        return Ok(());
+    }
     let api_key = env::var("GROQ_API_KEY")
         .context("GROQ_API_KEY is not set; export it before starting hydra")?;
     let model = env::var("GROQ_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
@@ -88,6 +96,8 @@ async fn run() -> Result<()> {
         list_models(&api_key).await?;
         return Ok(());
     }
+
+    let cleaner = cleanup::Cleaner::from_env()?;
 
     let (hotkey_tx, mut hotkey_rx) = tokio_mpsc::unbounded_channel();
     let _control_listener = control::start(hotkey_tx.clone())?;
@@ -104,6 +114,7 @@ async fn run() -> Result<()> {
     println!("Hydra is running.");
     println!("Press Super+Space to start/stop recording.");
     println!("Groq model: {model}");
+    println!("IsoQuant cleanup model: {}", cleanup::MODEL);
 
     let client = reqwest::Client::new();
     let mut recording = None;
@@ -134,6 +145,34 @@ async fn run() -> Result<()> {
             match transcribe(&client, &api_key, &model, &audio_path).await {
                 Ok(text) if !text.trim().is_empty() => {
                     log!("INFO", "transcript", "cycle={cycle} text={text:?}");
+                    println!("Cleaning up...");
+                    let text = match cleaner.clean(&client, &text).await {
+                        Ok(cleaned) => {
+                            log!(
+                                "INFO",
+                                "cleaned_transcript",
+                                "cycle={cycle} text={cleaned:?}"
+                            );
+                            cleaned
+                        }
+                        Err(error) => {
+                            log!(
+                                "WARN",
+                                "cleanup_failed",
+                                "cycle={cycle} using_raw_transcript=true {error:#}"
+                            );
+                            text
+                        }
+                    };
+                    if text.is_empty() {
+                        log!(
+                            "INFO",
+                            "cleanup_empty",
+                            "cycle={cycle} skipping_insertion=true"
+                        );
+                        let _ = fs::remove_file(audio_path);
+                        continue;
+                    }
                     if let Err(error) = paste_and_submit(&text) {
                         log!("ERROR", "insertion_failed", "cycle={cycle} {error:#}");
                     }
