@@ -24,15 +24,18 @@ Updated: 2026-10-02.
    (mono 16 kHz WAV).
 3. On the next toggle, stop recording, resume media, play the release cue.
 4. Transcribe with Groq (`whisper-large-v3-turbo` by default).
-5. Clean up with IsoQuant `glm-5.3-flash` (optional; falls back to the raw
-   transcript on error).
+5. Route to a profile with IsoQuant System One (`/v1/systemone`, `choice`
+   question over profile descriptions) when more than one profile exists, then
+   rewrite with that profile's prompt on `glm-5.3-flash`. The default profile
+   runs in parallel with routing. Fallbacks: low confidence or route error →
+   default profile; profile error → default output; default error → raw text.
 6. Type with `wtype` (Wayland) or paste with `xdotool` (X11), then Enter.
 
 ## Files
 
 - `src/main.rs` — CLI, daemon loop, recording, transcription, typing, sounds
 - `src/config.rs` — `config.toml` loading, defaults, XDG paths
-- `src/cleanup.rs` — IsoQuant transcript cleanup and its system prompt
+- `src/profiles.rs` — profiles, built-in prompts, System One routing
 - `src/control.rs` — compositor toggle socket
 - `src/logging.rs` — private diagnostic log
 - `src/media.rs` — MPRIS pause/resume
@@ -44,7 +47,7 @@ Updated: 2026-10-02.
 ## Configuration
 
 `~/.config/hydra-stt/config.toml` is created on first run (dir `700`, file
-`600`). It holds API keys, models, cleanup settings, hotkey, ALSA device,
+`600`). It holds API keys, IsoQuant/router/profile settings, hotkey, ALSA device,
 sound volume/files, media pause, Enter, and log dir. `GROQ_API_KEY`,
 `GROQ_MODEL`, `ISO_QUANT_API_KEY` env vars override the file;
 `HYDRA_STT_CONFIG` selects another file. Unknown keys are rejected.
@@ -66,12 +69,21 @@ Anonymous `curl | sh` installs work once a tagged release exists.
 - `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test` — passed
 - Config first-run creation, permissions, key loading, unknown-field and range
   errors, permission warning — tested in a sandbox HOME
-- `--cleanup` and `--models` against live APIs with keys from the config file
+- `--process` and `--models` against live APIs with keys from the config file
+- Routing: dictation → default, rambling coding requests → prompt; single
+  profile skips routing; low confidence falls back to default
 - Daemon startup, single-instance guard, SIGTERM clean shutdown — passed
 - Local zigbuild of both targets, `.deb` packaging, installer install /
   checksum mismatch / uninstall — passed
 - Not yet run: the GitHub Actions workflows themselves, and a live dictation
   cycle with the renamed binary
+
+## wtype keycode bug (fixed)
+
+wtype assigns the Nth distinct character of one invocation to evdev keycode N.
+Characters landing on modifier keycodes (29 Left Ctrl, 42 Left Shift, ...) were
+swallowed: in a 4.6k-character dictation, capital I and R vanished. Typing now
+splits text into wtype calls of at most 28 distinct characters each.
 
 ## Known limitations / next steps
 

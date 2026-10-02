@@ -1,9 +1,9 @@
 # Hydra STT
 
 Push-to-toggle speech-to-text dictation for Linux. Press a key, speak, press
-it again: the recording is transcribed with Groq Whisper, optionally cleaned
-up with IsoQuant's `glm-5.3-flash`, and typed into the focused application,
-followed by Enter.
+it again: the recording is transcribed with Groq Whisper, routed to a
+processing profile by IsoQuant's System One decision model, rewritten by that
+profile with `glm-5.3-flash`, and typed into the focused application.
 
 ## Install
 
@@ -36,7 +36,7 @@ sudo apt install ./hydra-stt_amd64.deb
 - `wtype` on Wayland, or `xdotool` on X11, for typing
 - `paplay` (pulseaudio-utils, works with PipeWire) for feedback sounds
 - `playerctl` for pausing media while recording (optional)
-- A Groq API key; an IsoQuant API key if cleanup is enabled
+- A Groq API key, and an IsoQuant API key unless `[isoquant] enabled = false`
 
 ## Configure
 
@@ -47,7 +47,9 @@ then exits asking for your API keys.
 | Section       | Options                                                        |
 | ------------- | -------------------------------------------------------------- |
 | `[groq]`      | `api_key`, `model`                                             |
-| `[cleanup]`   | `enabled`, `api_key`, `api_url`, `model`, `timeout_secs`, `prompt` |
+| `[isoquant]`  | `enabled`, `api_key`, `api_url`, `timeout_secs`                |
+| `[router]`    | `model`, `instructions`, `min_confidence`                      |
+| `[profiles.NAME]` | `description`, `model`, `prompt`                           |
 | `[hotkey]`    | `binding` (X11 only, e.g. `"Super+Space"`, `"Ctrl+Alt+KeyD"`)  |
 | `[recording]` | `device` (ALSA device for `arecord -D`; see `arecord -L`)      |
 | `[sounds]`    | `enabled`, `volume` (0-100), `press`, `release` (custom WAVs)  |
@@ -70,9 +72,9 @@ hydra-stt
 
 A high click means recording started; a low click means it stopped. Media
 players that were playing are paused while recording and resumed afterwards.
-If cleanup fails, the raw transcript is typed instead. Line breaks are
+If processing fails, the raw transcript is typed instead. Line breaks are
 joined into one line by default, because a typed newline is a Return key press
-that would submit partial text; `newlines = "shift_enter"` keeps them. Empty cleaned text is
+that would submit partial text; `newlines = "shift_enter"` keeps them. Empty output is
 not typed and does not send Enter. SIGINT or SIGTERM stop the daemon cleanly.
 
 Other commands:
@@ -81,8 +83,36 @@ Other commands:
 hydra-stt --toggle        # start/stop recording in the running daemon
 hydra-stt --models        # list Groq speech models on your account
 hydra-stt --config-path   # print the config file location
-printf '%s' 'Um, I I need to call, uh, call Sam.' | hydra-stt --cleanup
+printf '%s' 'Um, I I need to call, uh, call Sam.' | hydra-stt --process
+printf '%s' 'Edit A, actually no, edit B.' | hydra-stt --process prompt
 ```
+
+## Profiles
+
+A profile is a system prompt that rewrites the transcript. Two are built in:
+
+- **`default`**: cleans up dictation (fillers, false starts, punctuation, code
+  paths and identifiers) and keeps your wording.
+- **`prompt`**: treats the speech as a prompt for an AI assistant and keeps
+  only your final intent. "Edit file A, actually no, change file B" becomes
+  "Change file B", and asides like "wait, I got a call" are dropped.
+
+With more than one profile, each transcript goes to IsoQuant System One
+(`/v1/systemone`), which picks a profile from the `description` of each. The
+default profile runs in parallel, so routing adds no latency when it wins.
+A choice below `[router] min_confidence`, or any routing error, falls back to
+`default`. With only `[profiles.default]`, System One is never called.
+
+Add your own by giving it a description (what System One matches against)
+and a prompt:
+
+```toml
+[profiles.email]
+description = "An email or a reply to one."
+prompt = "Rewrite the transcript as a concise, friendly email body. Return only the email."
+```
+
+The `route_decided` log event records each choice with its probabilities.
 
 ### Wayland (Niri example)
 
@@ -114,10 +144,10 @@ tail -f ~/.local/state/hydra-stt/hydra.log
 
 ```sh
 cargo run                 # debug build, logs to ./logs
-cargo run -- --cleanup < transcript.txt
+cargo run -- --process < transcript.txt
 ```
 
-The cleanup prompt is in `src/cleanup.rs`, and it follows the conservative approach
+The built-in profile prompts are in `src/profiles.rs`. The default prompt follows the conservative approach
 of [Fluent](https://github.com/inhaq/fluent) and this
 [community dictation prompt](https://gist.github.com/travisjhicks/c11d6e85a912c6c436daca3c7afe12b2).
 The feedback cues in `assets/` are embedded in the binary; regenerate them with

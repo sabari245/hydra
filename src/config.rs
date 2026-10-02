@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{
+    collections::BTreeMap,
     env, fs,
     io::Write,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -14,7 +15,9 @@ const TEMPLATE: &str = include_str!("../config.example.toml");
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub groq: Groq,
-    pub cleanup: Cleanup,
+    pub isoquant: IsoQuant,
+    pub router: Router,
+    pub profiles: Profiles,
     pub hotkey: Hotkey,
     pub recording: Recording,
     pub sounds: Sounds,
@@ -41,23 +44,71 @@ impl Default for Groq {
 
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Cleanup {
+pub struct IsoQuant {
     pub enabled: bool,
     pub api_key: String,
     pub api_url: String,
-    pub model: String,
     pub timeout_secs: u64,
-    pub prompt: String,
 }
 
-impl Default for Cleanup {
+impl Default for IsoQuant {
     fn default() -> Self {
         Self {
             enabled: true,
             api_key: String::new(),
-            api_url: "https://api.isoquant.ai/v1/chat/completions".to_owned(),
-            model: "glm-5.3-flash".to_owned(),
+            api_url: "https://api.isoquant.ai/v1".to_owned(),
             timeout_secs: 30,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Router {
+    pub model: String,
+    pub instructions: String,
+    pub min_confidence: f64,
+}
+
+impl Default for Router {
+    fn default() -> Self {
+        Self {
+            model: "isoquant/system-one".to_owned(),
+            instructions: "Choose which profile should process this dictated speech.".to_owned(),
+            min_confidence: 0.5,
+        }
+    }
+}
+
+/// Profiles by name. Defining any `[profiles.*]` table replaces the built-in set.
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
+pub struct Profiles(pub BTreeMap<String, Profile>);
+
+impl Default for Profiles {
+    fn default() -> Self {
+        Self(
+            ["default", "prompt"]
+                .into_iter()
+                .map(|name| (name.to_owned(), Profile::default()))
+                .collect(),
+        )
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Profile {
+    pub description: String,
+    pub model: String,
+    pub prompt: String,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            description: String::new(),
+            model: "glm-5.3-flash".to_owned(),
             prompt: String::new(),
         }
     }
@@ -191,6 +242,9 @@ impl Config {
         if config.sounds.volume > 100 {
             bail!("sounds.volume must be between 0 and 100");
         }
+        if !(0.0..=1.0).contains(&config.router.min_confidence) {
+            bail!("router.min_confidence must be between 0 and 1");
+        }
         if let Ok(key) = env::var("GROQ_API_KEY") {
             config.groq.api_key = key;
         }
@@ -198,7 +252,7 @@ impl Config {
             config.groq.model = model;
         }
         if let Ok(key) = env::var("ISO_QUANT_API_KEY") {
-            config.cleanup.api_key = key;
+            config.isoquant.api_key = key;
         }
         Ok(config)
     }

@@ -4,11 +4,11 @@ macro_rules! log {
     };
 }
 
-mod cleanup;
 mod config;
 mod control;
 mod logging;
 mod media;
+mod profiles;
 
 use anyhow::{Context, Result, anyhow, bail};
 use arboard::Clipboard;
@@ -40,7 +40,8 @@ Usage: hydra-stt [COMMAND]
 Commands:
   (none)         Run the dictation daemon
   --toggle       Start or stop recording in the running daemon
-  --cleanup      Clean up a transcript read from stdin and print it
+  --process [P]  Process a transcript from stdin and print it, routed to a
+                 profile, or always through profile P when given
   --models       List the speech models on your Groq account
   --config-path  Print the configuration file path
   --help         Show this help
@@ -48,7 +49,7 @@ Commands:
 
 enum Mode {
     Daemon,
-    Cleanup,
+    Process(Option<String>),
     Models,
 }
 
@@ -80,7 +81,7 @@ async fn main() -> Result<()> {
     let mode = match env::args().nth(1).as_deref() {
         None => Mode::Daemon,
         Some("--toggle") => return control::toggle(),
-        Some("--cleanup") => Mode::Cleanup,
+        Some("--process" | "--cleanup") => Mode::Process(env::args().nth(2)),
         Some("--models") => Mode::Models,
         Some("--config-path") => {
             println!("{}", config::path()?.display());
@@ -135,13 +136,15 @@ async fn main() -> Result<()> {
 }
 
 async fn run(mode: Mode, config: &config::Config, config_path: &Path) -> Result<()> {
-    if let Mode::Cleanup = mode {
-        let cleaner =
-            cleanup::Cleaner::from_config(&config.cleanup, config.output.newlines, config_path)?
-                .context("cleanup is disabled in the configuration")?;
+    if let Mode::Process(profile) = &mode {
+        let pipeline = profiles::Pipeline::from_config(config, config_path)?
+            .context("IsoQuant processing is disabled in the configuration")?;
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text)?;
-        println!("{}", cleaner.clean(&reqwest::Client::new(), &text).await?);
+        let output = pipeline
+            .process(&reqwest::Client::new(), &text, profile.as_deref())
+            .await;
+        println!("{output}");
         return Ok(());
     }
     let api_key = config.groq_api_key(config_path)?;
@@ -152,8 +155,7 @@ async fn run(mode: Mode, config: &config::Config, config_path: &Path) -> Result<
         return Ok(());
     }
 
-    let cleaner =
-        cleanup::Cleaner::from_config(&config.cleanup, config.output.newlines, config_path)?;
+    let pipeline = profiles::Pipeline::from_config(config, config_path)?;
 
     let (hotkey_tx, mut hotkey_rx) = tokio_mpsc::unbounded_channel();
     let _control_listener = control::start(hotkey_tx.clone())?;
@@ -180,9 +182,9 @@ async fn run(mode: Mode, config: &config::Config, config_path: &Path) -> Result<
         println!("Press {} to start/stop recording.", config.hotkey.binding);
     }
     println!("Groq model: {model}");
-    match &cleaner {
-        Some(cleaner) => println!("Cleanup model: {}", cleaner.model),
-        None => println!("Cleanup: disabled"),
+    match &pipeline {
+        Some(pipeline) => println!("Profiles: {}", pipeline.profile_names().join(", ")),
+        None => println!("Profiles: disabled, typing raw transcripts"),
     }
 
     let client = reqwest::Client::new();
@@ -210,7 +212,7 @@ async fn run(mode: Mode, config: &config::Config, config_path: &Path) -> Result<
                 &client,
                 config,
                 api_key,
-                cleaner.as_ref(),
+                pipeline.as_ref(),
                 &audio_path,
                 cycle,
             )
@@ -247,7 +249,7 @@ async fn process_recording(
     client: &reqwest::Client,
     config: &config::Config,
     api_key: &str,
-    cleaner: Option<&cleanup::Cleaner>,
+    pipeline: Option<&profiles::Pipeline>,
     audio_path: &Path,
     cycle: u64,
 ) {
@@ -274,17 +276,17 @@ async fn process_recording(
     };
     log!("INFO", "transcript", "cycle={cycle} text={text:?}");
 
-    let text = match cleaner {
+    let text = match pipeline {
         None => text,
-        Some(cleaner) => {
-            println!("Cleaning up...");
-            clean_or_raw(client, cleaner, text, cycle).await
+        Some(pipeline) => {
+            println!("Processing...");
+            pipeline.process(client, &text, None).await
         }
     };
     if text.is_empty() {
         log!(
             "INFO",
-            "cleanup_empty",
+            "output_empty",
             "cycle={cycle} skipping_insertion=true"
         );
         return;
@@ -310,32 +312,6 @@ fn normalize_lines(text: &str, newlines: config::Newlines) -> String {
                 }
             }
             lines.join("\n").trim_end().to_owned()
-        }
-    }
-}
-
-async fn clean_or_raw(
-    client: &reqwest::Client,
-    cleaner: &cleanup::Cleaner,
-    text: String,
-    cycle: u64,
-) -> String {
-    match cleaner.clean(client, &text).await {
-        Ok(cleaned) => {
-            log!(
-                "INFO",
-                "cleaned_transcript",
-                "cycle={cycle} text={cleaned:?}"
-            );
-            cleaned
-        }
-        Err(error) => {
-            log!(
-                "WARN",
-                "cleanup_failed",
-                "cycle={cycle} using_raw_transcript=true {error:#}"
-            );
-            text
         }
     }
 }
@@ -641,8 +617,8 @@ fn type_on_wayland(text: &str, press_enter: bool) -> Result<()> {
                 "Shift+Enter",
             )?;
         }
-        if !line.is_empty() {
-            wtype(&["--", line], "the transcript")?;
+        for chunk in wtype_chunks(line) {
+            wtype(&["--", chunk], "the transcript")?;
         }
     }
     log!("INFO", "typing_result", "lines={}", text.lines().count());
@@ -653,6 +629,32 @@ fn type_on_wayland(text: &str, press_enter: bool) -> Result<()> {
     wtype(&["-k", "Return"], "Enter")?;
     log!("INFO", "enter_result", "sent=true");
     Ok(())
+}
+
+/// wtype sends the Nth distinct character of a call as evdev keycode N, so the
+/// 29th lands on Left Ctrl (29) and the 42nd on Left Shift (42), and those
+/// characters are swallowed as modifiers. Each call gets a fresh keymap, so
+/// splitting text into chunks of at most 28 distinct characters avoids them.
+const WTYPE_MAX_DISTINCT: usize = 28;
+
+fn wtype_chunks(text: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut seen = Vec::with_capacity(WTYPE_MAX_DISTINCT);
+    let mut start = 0;
+    for (index, ch) in text.char_indices() {
+        if !seen.contains(&ch) {
+            if seen.len() == WTYPE_MAX_DISTINCT {
+                chunks.push(&text[start..index]);
+                start = index;
+                seen.clear();
+            }
+            seen.push(ch);
+        }
+    }
+    if start < text.len() {
+        chunks.push(&text[start..]);
+    }
+    chunks
 }
 
 fn wtype(args: &[&str], what: &str) -> Result<()> {
@@ -670,6 +672,21 @@ fn wtype(args: &[&str], what: &str) -> Result<()> {
 mod tests {
     use super::*;
     use config::Newlines::{ShiftEnter, Space};
+
+    #[test]
+    fn wtype_chunks_stay_below_modifier_keycodes() {
+        let text = "Alright man, so we are going to add something. And Isoquant, I'll paste it. Right now? Yes: 42% (ok) [x] {y} 1234567890 QWERTZUIOP";
+        let chunks = wtype_chunks(text);
+        assert!(chunks.len() > 1);
+        assert_eq!(chunks.concat(), text);
+        for chunk in chunks {
+            let mut distinct: Vec<char> = chunk.chars().collect();
+            distinct.sort_unstable();
+            distinct.dedup();
+            assert!(distinct.len() <= WTYPE_MAX_DISTINCT, "{chunk:?}");
+        }
+        assert!(wtype_chunks("").is_empty());
+    }
 
     #[test]
     fn space_joins_everything_into_one_line() {

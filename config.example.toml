@@ -14,15 +14,41 @@ api_key = ""
 # Run `hydra-stt --models` to list the models on your account.
 model = "whisper-large-v3-turbo"
 
-[cleanup]
-# Removes filler words, false starts and repeats before typing.
-# When the cleanup request fails, the raw transcript is typed instead.
+[isoquant]
+# Post-processing with IsoQuant models. When disabled, or when a request
+# fails, the raw transcript is typed instead.
 enabled = true
 api_key = ""
-api_url = "https://api.isoquant.ai/v1/chat/completions"
-model = "glm-5.3-flash"
+api_url = "https://api.isoquant.ai/v1"
 timeout_secs = 30
-# Leave empty to use the built-in prompt.
+
+[router]
+# With more than one profile, the System One decision model picks the profile
+# for each transcript from the profile descriptions. Below min_confidence
+# (0-1), or when routing fails, the default profile is used.
+model = "isoquant/system-one"
+instructions = "Choose which profile should process this dictated speech."
+min_confidence = 0.5
+
+# Profiles. Each one runs its prompt on the transcript with an IsoQuant chat
+# model. "default" is required and is the fallback. With only
+# [profiles.default], no routing happens. The built-in "default" (clean up
+# dictation) and "prompt" (turn rambling speech into a clear AI prompt)
+# profiles use built-in prompts and descriptions when those are left empty.
+# Custom profiles need both, for example:
+#
+# [profiles.email]
+# description = "An email or a reply to one."
+# prompt = "Rewrite the transcript as a polite, concise email body. ..."
+
+[profiles.default]
+model = "glm-5.3-flash"
+description = ""
+prompt = ""
+
+[profiles.prompt]
+model = "glm-5.3-flash"
+description = ""
 prompt = ""
 
 [hotkey]
