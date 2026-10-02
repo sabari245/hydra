@@ -32,10 +32,14 @@ min_confidence = 0.5
 
 # Profiles. Each one runs its prompt on the transcript with an IsoQuant chat
 # model. "default" is required and is the fallback. With only
-# [profiles.default], no routing happens. The built-in "default" (clean up
-# dictation) and "prompt" (turn rambling speech into a clear AI prompt)
-# profiles use built-in prompts and descriptions when those are left empty.
-# Custom profiles need both, for example:
+# [profiles.default], no routing happens. The built-in profiles use built-in
+# prompts and descriptions when those are left empty:
+#   default   clean up dictation and type it
+#   prompt    turn rambling speech into a clear AI prompt and type it
+#   computer  an agent that does the request on the desktop (see [computer])
+# Defining any [profiles.*] table replaces this set, so list every profile you
+# want. Set tools = true on a custom profile to make it an agent too.
+# Custom profiles need a prompt and a description, for example:
 #
 # [profiles.email]
 # description = "An email or a reply to one."
@@ -51,9 +55,30 @@ model = "glm-5.3-flash"
 description = ""
 prompt = ""
 
-[hotkey]
-# X11 only. On Wayland, bind `hydra-stt --toggle` in your compositor instead.
-binding = "Super+Space"
+[profiles.computer]
+model = "glm-5.3-flash"
+description = ""
+prompt = ""
+
+[computer]
+# The computer agent takes screenshots of any monitor, moves and clicks the
+# mouse, types, runs bash commands, and reads and writes files, all as you.
+# Screenshots are sent to IsoQuant. Press your toggle key while it works to stop it.
+max_steps = 30
+command_timeout_secs = 60
+# Allow sudo, su, pkexec, doas and run0 in commands.
+allow_privileged = false
+# Longest screenshot edge sent to the model, in pixels.
+screenshot_max_size = 1280
+# Show desktop notifications when the agent starts and finishes.
+notify = true
+
+[history]
+# Each profile sees its last few inputs, outputs and actions, kept in
+# ~/.local/share/hydra-stt/history. Memory the agent saves lives in
+# ~/.local/share/hydra-stt/memories and is shown to every profile.
+enabled = true
+entries = 10
 
 [recording]
 # ALSA capture device passed to `arecord -D`. Empty uses the system default.

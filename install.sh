@@ -42,8 +42,7 @@ fi
 [ "$(uname -s)" = "Linux" ] || fail "Hydra STT only supports Linux"
 case "$(uname -m)" in
     x86_64 | amd64) TARGET="x86_64-unknown-linux-gnu" ;;
-    aarch64 | arm64) TARGET="aarch64-unknown-linux-gnu" ;;
-    *) fail "unsupported architecture: $(uname -m)" ;;
+    *) fail "Hydra STT only supports x86_64, not $(uname -m)" ;;
 esac
 
 if [ -n "${HYDRA_STT_BASE_URL:-}" ]; then
@@ -99,19 +98,15 @@ case ":$PATH:" in
 esac
 
 missing=""
-for tool in arecord paplay playerctl; do
+for tool in arecord paplay wtype playerctl wl-copy notify-send; do
     has "$tool" || missing="$missing $tool"
 done
-if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    has wtype || missing="$missing wtype"
-else
-    has xdotool || missing="$missing xdotool"
-fi
+[ -n "${WAYLAND_DISPLAY:-}" ] || say "warning: Hydra STT needs a Wayland session"
 if [ -n "$missing" ]; then
     say "missing runtime tools:$missing"
-    say "  Debian/Ubuntu: sudo apt install alsa-utils pulseaudio-utils playerctl wtype xdotool"
-    say "  Fedora:        sudo dnf install alsa-utils pulseaudio-utils playerctl wtype xdotool"
-    say "  Arch:          sudo pacman -S alsa-utils libpulse playerctl wtype xdotool"
+    say "  Debian/Ubuntu: sudo apt install alsa-utils pulseaudio-utils wtype playerctl wl-clipboard libnotify-bin"
+    say "  Fedora:        sudo dnf install alsa-utils pulseaudio-utils wtype playerctl wl-clipboard libnotify"
+    say "  Arch:          sudo pacman -S alsa-utils libpulse wtype playerctl wl-clipboard libnotify"
 fi
 
 cat <<EOF
@@ -119,7 +114,6 @@ cat <<EOF
 Next steps:
   1. Run 'hydra-stt' once to create ~/.config/hydra-stt/config.toml.
   2. Add your Groq (and optionally IsoQuant) API keys to that file.
-  3. On Wayland, bind '$BIN_DIR/hydra-stt --toggle' to a key in your compositor.
-     On X11, the hotkey in the config file (default Super+Space) works directly.
+  3. Bind '$BIN_DIR/hydra-stt --toggle' to a key in your Wayland compositor.
   4. Start the daemon: hydra-stt
 EOF

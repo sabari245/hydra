@@ -11,14 +11,18 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-arboard = "3"
-global-hotkey = "0.6"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+libwayshot = { version = "0.9", default-features = false }
 nix = { version = "0.29", features = ["signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "signal", "sync"] }
+tokio = { version = "1", features = ["fs", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.9"
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-sys = { version = "0.31", features = ["dlopen"] }
 
 [profile.release]
 lto = true
@@ -29,8 +33,8 @@ strip = true
 maintainer = "Vorden <sabari2004@hotmail.com>"
 section = "sound"
 priority = "optional"
-depends = "libc6 (>= 2.31), alsa-utils, pulseaudio-utils"
-recommends = "wtype | xdotool, playerctl"
+depends = "libc6 (>= 2.31), libwayland-client0, alsa-utils, pulseaudio-utils, wtype"
+recommends = "playerctl, wl-clipboard, libnotify-bin"
 extended-description = """\
 Hydra STT records speech on a hotkey, transcribes it with Groq Whisper, \
 optionally cleans the transcript, and types it into the focused window. \

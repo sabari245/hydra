@@ -18,7 +18,8 @@ pub struct Config {
     pub isoquant: IsoQuant,
     pub router: Router,
     pub profiles: Profiles,
-    pub hotkey: Hotkey,
+    pub computer: Computer,
+    pub history: History,
     pub recording: Recording,
     pub sounds: Sounds,
     pub media: Media,
@@ -88,7 +89,7 @@ pub struct Profiles(pub BTreeMap<String, Profile>);
 impl Default for Profiles {
     fn default() -> Self {
         Self(
-            ["default", "prompt"]
+            ["default", "prompt", "computer"]
                 .into_iter()
                 .map(|name| (name.to_owned(), Profile::default()))
                 .collect(),
@@ -102,6 +103,9 @@ pub struct Profile {
     pub description: String,
     pub model: String,
     pub prompt: String,
+    /// Gives the profile the computer-control tools. Defaults to true only
+    /// for the built-in "computer" profile.
+    pub tools: Option<bool>,
 }
 
 impl Default for Profile {
@@ -110,20 +114,45 @@ impl Default for Profile {
             description: String::new(),
             model: "glm-5.3-flash".to_owned(),
             prompt: String::new(),
+            tools: None,
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Hotkey {
-    pub binding: String,
+pub struct Computer {
+    pub max_steps: usize,
+    pub command_timeout_secs: u64,
+    pub allow_privileged: bool,
+    pub screenshot_max_size: u32,
+    pub notify: bool,
 }
 
-impl Default for Hotkey {
+impl Default for Computer {
     fn default() -> Self {
         Self {
-            binding: "Super+Space".to_owned(),
+            max_steps: 30,
+            command_timeout_secs: 60,
+            allow_privileged: false,
+            screenshot_max_size: 1280,
+            notify: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct History {
+    pub enabled: bool,
+    pub entries: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            entries: 10,
         }
     }
 }
@@ -266,6 +295,14 @@ impl Config {
             );
         }
         Ok(key)
+    }
+
+    /// Memory and history live here: ~/.local/share/hydra-stt by default.
+    pub fn data_dir(&self) -> Result<PathBuf> {
+        if cfg!(debug_assertions) {
+            return Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data"));
+        }
+        Ok(xdg_dir("XDG_DATA_HOME", ".local/share")?.join(APP_NAME))
     }
 
     pub fn log_dir(&self) -> Result<PathBuf> {

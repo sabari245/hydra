@@ -4,15 +4,19 @@ macro_rules! log {
     };
 }
 
+mod agent;
 mod config;
 mod control;
+mod history;
 mod logging;
 mod media;
+mod pointer;
 mod profiles;
+mod screenshot;
+mod tools;
+mod typing;
 
-use anyhow::{Context, Result, anyhow, bail};
-use arboard::Clipboard;
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
+use anyhow::{Context, Result, bail};
 use nix::{sys::signal, unistd::Pid};
 use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
@@ -22,13 +26,14 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     process::{Child, Command},
-    sync::mpsc,
+    sync::Arc,
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tokio::{
     signal::unix::{self as tokio_signal, SignalKind},
     sync::mpsc as tokio_mpsc,
+    task::JoinHandle,
 };
 
 const GROQ_API_URL: &str = "https://api.groq.com/openai/v1";
@@ -40,8 +45,9 @@ Usage: hydra-stt [COMMAND]
 Commands:
   (none)         Run the dictation daemon
   --toggle       Start or stop recording in the running daemon
-  --process [P]  Process a transcript from stdin and print it, routed to a
-                 profile, or always through profile P when given
+  --process [P]  Process a transcript from stdin, routed to a profile or
+                 always through profile P, and print the text to type or
+                 the agent's summary
   --models       List the speech models on your Groq account
   --config-path  Print the configuration file path
   --help         Show this help
@@ -105,17 +111,16 @@ async fn main() -> Result<()> {
             config_path.display()
         );
     }
-    let config = config::Config::load(&config_path)?;
+    let config = Arc::new(config::Config::load(&config_path)?);
     let log_path = logging::init(&config.log_dir()?)?;
     log!(
         "INFO",
         "startup",
-        "pid={} version={} session={:?} wayland={:?} display={:?} config={} log={}",
+        "pid={} version={} session={:?} wayland={:?} config={} log={}",
         std::process::id(),
         env!("CARGO_PKG_VERSION"),
         env::var("XDG_SESSION_TYPE").ok(),
         env::var("WAYLAND_DISPLAY").ok(),
-        env::var("DISPLAY").ok(),
         config_path.display(),
         log_path.display()
     );
@@ -135,52 +140,38 @@ async fn main() -> Result<()> {
     result
 }
 
-async fn run(mode: Mode, config: &config::Config, config_path: &Path) -> Result<()> {
+async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Result<()> {
     if let Mode::Process(profile) = &mode {
         let pipeline = profiles::Pipeline::from_config(config, config_path)?
             .context("IsoQuant processing is disabled in the configuration")?;
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text)?;
-        let output = pipeline
+        match pipeline
             .process(&reqwest::Client::new(), &text, profile.as_deref())
-            .await;
-        println!("{output}");
+            .await
+        {
+            profiles::Output::Text(text) | profiles::Output::Done(text) => println!("{text}"),
+        }
         return Ok(());
     }
-    let api_key = config.groq_api_key(config_path)?;
+    let api_key: Arc<str> = config.groq_api_key(config_path)?.into();
     let model = config.groq.model.as_str();
 
     if let Mode::Models = mode {
-        list_models(api_key).await?;
+        list_models(&api_key).await?;
         return Ok(());
     }
 
-    let pipeline = profiles::Pipeline::from_config(config, config_path)?;
+    let pipeline = profiles::Pipeline::from_config(config, config_path)?.map(Arc::new);
 
-    let (hotkey_tx, mut hotkey_rx) = tokio_mpsc::unbounded_channel();
-    let _control_listener = control::start(hotkey_tx.clone())?;
-    let wayland = env::var_os("WAYLAND_DISPLAY").is_some();
-    if wayland {
-        log!(
-            "INFO",
-            "hotkey_backend",
-            "backend=compositor command=hydra-stt --toggle"
-        );
-    } else {
-        let hotkey = config
-            .hotkey
-            .binding
-            .parse::<HotKey>()
-            .with_context(|| format!("invalid hotkey.binding {:?}", config.hotkey.binding))?;
-        start_hotkey_listener(hotkey, config.hotkey.binding.clone(), hotkey_tx)?;
+    let (toggle_tx, mut toggle_rx) = tokio_mpsc::unbounded_channel();
+    let _control_listener = control::start(toggle_tx)?;
+    if env::var_os("WAYLAND_DISPLAY").is_none() {
+        bail!("Hydra STT needs a Wayland session (WAYLAND_DISPLAY is not set)");
     }
 
     println!("Hydra STT is running.");
-    if wayland {
-        println!("Bind `hydra-stt --toggle` in your compositor to start/stop recording.");
-    } else {
-        println!("Press {} to start/stop recording.", config.hotkey.binding);
-    }
+    println!("Bind `hydra-stt --toggle` in your compositor to start/stop recording.");
     println!("Groq model: {model}");
     match &pipeline {
         Some(pipeline) => println!("Profiles: {}", pipeline.profile_names().join(", ")),
@@ -189,35 +180,54 @@ async fn run(mode: Mode, config: &config::Config, config_path: &Path) -> Result<
 
     let client = reqwest::Client::new();
     let mut recording = None;
+    let mut processing: Option<JoinHandle<()>> = None;
 
     let mut cycle = 0_u64;
     let mut terminate = tokio_signal::signal(SignalKind::terminate())?;
     let mut interrupt = tokio_signal::signal(SignalKind::interrupt())?;
     loop {
         tokio::select! {
-            toggle = hotkey_rx.recv() => if toggle.is_none() { break },
+            toggle = toggle_rx.recv() => if toggle.is_none() { break },
             _ = terminate.recv() => break,
             _ = interrupt.recv() => break,
         }
+        let busy = processing.as_ref().is_some_and(|task| !task.is_finished());
         log!(
             "INFO",
             "toggle_received",
-            "cycle={cycle} recording={}",
+            "cycle={cycle} recording={} processing={busy}",
             recording.is_some()
         );
         if let Some(active) = recording.take() {
             let audio_path = stop_recording(active)?;
             play_click(&config.sounds, false);
-            process_recording(
-                &client,
-                config,
-                api_key,
-                pipeline.as_ref(),
-                &audio_path,
-                cycle,
-            )
-            .await;
-            let _ = fs::remove_file(audio_path);
+            let (client, config, api_key, pipeline) = (
+                client.clone(),
+                Arc::clone(config),
+                Arc::clone(&api_key),
+                pipeline.clone(),
+            );
+            processing = Some(tokio::spawn(async move {
+                process_recording(
+                    &client,
+                    &config,
+                    &api_key,
+                    pipeline.as_deref(),
+                    &audio_path,
+                    cycle,
+                )
+                .await;
+                let _ = fs::remove_file(audio_path);
+            }));
+        } else if busy {
+            // A toggle while a transcript is being processed cancels it,
+            // including any running agent and its commands.
+            if let Some(task) = processing.take() {
+                task.abort();
+            }
+            log!("INFO", "processing_cancelled", "cycle={cycle}");
+            play_click(&config.sounds, false);
+            println!("Cancelled.");
         } else {
             cycle += 1;
             log!("INFO", "recording_requested", "cycle={cycle}");
@@ -238,6 +248,9 @@ async fn run(mode: Mode, config: &config::Config, config_path: &Path) -> Result<
         "recording={}",
         recording.is_some()
     );
+    if let Some(task) = processing {
+        task.abort();
+    }
     if let Some(active) = recording {
         let audio_path = stop_recording(active)?;
         let _ = fs::remove_file(audio_path);
@@ -280,7 +293,13 @@ async fn process_recording(
         None => text,
         Some(pipeline) => {
             println!("Processing...");
-            pipeline.process(client, &text, None).await
+            match pipeline.process(client, &text, None).await {
+                profiles::Output::Text(text) => text,
+                profiles::Output::Done(summary) => {
+                    println!("{summary}");
+                    return;
+                }
+            }
         }
     };
     if text.is_empty() {
@@ -291,84 +310,10 @@ async fn process_recording(
         );
         return;
     }
-    let text = normalize_lines(&text, config.output.newlines);
-    if let Err(error) = paste_and_submit(&text, config.output.press_enter) {
+    let text = typing::normalize_lines(&text, config.output.newlines);
+    if let Err(error) = typing::type_text(&text, config.output.press_enter) {
         log!("ERROR", "insertion_failed", "cycle={cycle} {error:#}");
     }
-}
-
-/// A typed "\n" is a Return key press that would submit partial text, so line
-/// breaks are either removed or kept for typing as Shift+Enter.
-fn normalize_lines(text: &str, newlines: config::Newlines) -> String {
-    let join_words = |line: &str| line.split_whitespace().collect::<Vec<_>>().join(" ");
-    match newlines {
-        config::Newlines::Space => join_words(text),
-        config::Newlines::ShiftEnter => {
-            let mut lines: Vec<String> = Vec::new();
-            for line in text.lines().map(join_words) {
-                // Keep at most one blank line between paragraphs.
-                if !line.is_empty() || lines.last().is_some_and(|last| !last.is_empty()) {
-                    lines.push(line);
-                }
-            }
-            lines.join("\n").trim_end().to_owned()
-        }
-    }
-}
-
-fn start_hotkey_listener(
-    hotkey: HotKey,
-    binding: String,
-    tx: tokio_mpsc::UnboundedSender<()>,
-) -> Result<()> {
-    let (ready_tx, ready_rx) = mpsc::channel();
-
-    thread::spawn(move || {
-        let result = (|| -> Result<()> {
-            let manager = GlobalHotKeyManager::new()?;
-            let hotkey_id = hotkey.id();
-            manager.register(hotkey)?;
-            log!(
-                "INFO",
-                "hotkey_registered",
-                "backend=X11 binding={binding} id={hotkey_id}"
-            );
-            ready_tx
-                .send(Ok(()))
-                .map_err(|_| anyhow!("hotkey listener was not initialized"))?;
-
-            let receiver = GlobalHotKeyEvent::receiver();
-            loop {
-                let event = receiver
-                    .recv()
-                    .map_err(|_| anyhow!("hotkey event channel closed"))?;
-                log!(
-                    "INFO",
-                    "hotkey_event",
-                    "id={} state={:?}",
-                    event.id,
-                    event.state
-                );
-                if event.id == hotkey_id
-                    && event.state == HotKeyState::Pressed
-                    && tx.send(()).is_err()
-                {
-                    break;
-                }
-            }
-            Ok(())
-        })();
-
-        if let Err(error) = result {
-            log!("ERROR", "hotkey_listener_failed", "{error:#}");
-            let _ = ready_tx.send(Err(error));
-        }
-    });
-
-    ready_rx
-        .recv()
-        .context("hotkey listener did not respond")??;
-    Ok(())
 }
 
 fn start_recording(
@@ -554,153 +499,5 @@ fn play_click(config: &config::Sounds, start: bool) {
             "audio_feedback_failed",
             "cue={name} {error}; install pulseaudio-utils or your distribution's paplay package"
         ),
-    }
-}
-
-fn paste_and_submit(text: &str, press_enter: bool) -> Result<()> {
-    let wayland = env::var_os("WAYLAND_DISPLAY").is_some();
-    log!(
-        "INFO",
-        "insertion_started",
-        "backend={} characters={}",
-        if wayland { "wtype" } else { "xdotool" },
-        text.chars().count()
-    );
-    if wayland {
-        return type_on_wayland(text, press_enter);
-    }
-
-    let mut clipboard = Clipboard::new().context("could not access the clipboard")?;
-    clipboard
-        .set_text(text)
-        .context("could not put the transcript on the clipboard")?;
-
-    let paste_status = Command::new("xdotool")
-        .args(["key", "--clearmodifiers", "ctrl+v"])
-        .status()
-        .context("could not run xdotool; install xdotool for keyboard output")?;
-    if !paste_status.success() {
-        bail!("xdotool failed while pasting the transcript");
-    }
-
-    if !press_enter {
-        log!(
-            "INFO",
-            "insertion_completed",
-            "backend=xdotool enter_sent=false"
-        );
-        return Ok(());
-    }
-    thread::sleep(Duration::from_millis(40));
-    let enter_status = Command::new("xdotool")
-        .args(["key", "--clearmodifiers", "Return"])
-        .status()
-        .context("could not send Enter through xdotool")?;
-    log!("INFO", "enter_result", "status={enter_status}");
-    if !enter_status.success() {
-        bail!("xdotool failed while pressing Enter");
-    }
-    log!(
-        "INFO",
-        "insertion_completed",
-        "backend=xdotool enter_sent=true"
-    );
-    Ok(())
-}
-
-fn type_on_wayland(text: &str, press_enter: bool) -> Result<()> {
-    // Everything after `--` is text to wtype, so each line needs its own call.
-    for (index, line) in text.split('\n').enumerate() {
-        if index > 0 {
-            wtype(
-                &["-M", "shift", "-k", "Return", "-m", "shift"],
-                "Shift+Enter",
-            )?;
-        }
-        for chunk in wtype_chunks(line) {
-            wtype(&["--", chunk], "the transcript")?;
-        }
-    }
-    log!("INFO", "typing_result", "lines={}", text.lines().count());
-    if !press_enter {
-        return Ok(());
-    }
-
-    wtype(&["-k", "Return"], "Enter")?;
-    log!("INFO", "enter_result", "sent=true");
-    Ok(())
-}
-
-/// wtype sends the Nth distinct character of a call as evdev keycode N, so the
-/// 29th lands on Left Ctrl (29) and the 42nd on Left Shift (42), and those
-/// characters are swallowed as modifiers. Each call gets a fresh keymap, so
-/// splitting text into chunks of at most 28 distinct characters avoids them.
-const WTYPE_MAX_DISTINCT: usize = 28;
-
-fn wtype_chunks(text: &str) -> Vec<&str> {
-    let mut chunks = Vec::new();
-    let mut seen = Vec::with_capacity(WTYPE_MAX_DISTINCT);
-    let mut start = 0;
-    for (index, ch) in text.char_indices() {
-        if !seen.contains(&ch) {
-            if seen.len() == WTYPE_MAX_DISTINCT {
-                chunks.push(&text[start..index]);
-                start = index;
-                seen.clear();
-            }
-            seen.push(ch);
-        }
-    }
-    if start < text.len() {
-        chunks.push(&text[start..]);
-    }
-    chunks
-}
-
-fn wtype(args: &[&str], what: &str) -> Result<()> {
-    let status = Command::new("wtype")
-        .args(args)
-        .status()
-        .context("could not run wtype; install wtype for Wayland keyboard output")?;
-    if !status.success() {
-        bail!("wtype failed while typing {what}: {status}");
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use config::Newlines::{ShiftEnter, Space};
-
-    #[test]
-    fn wtype_chunks_stay_below_modifier_keycodes() {
-        let text = "Alright man, so we are going to add something. And Isoquant, I'll paste it. Right now? Yes: 42% (ok) [x] {y} 1234567890 QWERTZUIOP";
-        let chunks = wtype_chunks(text);
-        assert!(chunks.len() > 1);
-        assert_eq!(chunks.concat(), text);
-        for chunk in chunks {
-            let mut distinct: Vec<char> = chunk.chars().collect();
-            distinct.sort_unstable();
-            distinct.dedup();
-            assert!(distinct.len() <= WTYPE_MAX_DISTINCT, "{chunk:?}");
-        }
-        assert!(wtype_chunks("").is_empty());
-    }
-
-    #[test]
-    fn space_joins_everything_into_one_line() {
-        assert_eq!(
-            normalize_lines("First  line.\n\nSecond\tline.\n", Space),
-            "First line. Second line."
-        );
-    }
-
-    #[test]
-    fn shift_enter_keeps_single_blank_lines() {
-        assert_eq!(
-            normalize_lines("One  two.\n\n\n\nThree.\n- four\n\n", ShiftEnter),
-            "One two.\n\nThree.\n- four"
-        );
     }
 }
