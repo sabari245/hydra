@@ -63,22 +63,14 @@ pub fn start(tx: UnboundedSender<()>) -> Result<Listener> {
         loop {
             match socket.recv(&mut buffer) {
                 Ok(size) if &buffer[..size] == b"toggle" => {
-                    crate::logging::event(
-                        "INFO",
-                        "compositor_toggle",
-                        format_args!("source=unix_socket"),
-                    );
+                    log!("INFO", "compositor_toggle", "source=unix_socket");
                     if tx.send(()).is_err() {
                         break;
                     }
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    crate::logging::event(
-                        "ERROR",
-                        "control_listener_failed",
-                        format_args!("{error}"),
-                    );
+                    log!("ERROR", "control_listener_failed", "{error}");
                     break;
                 }
             }

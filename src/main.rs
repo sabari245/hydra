@@ -1,13 +1,13 @@
+macro_rules! log {
+    ($level:expr, $event:expr, $($arg:tt)*) => {
+        $crate::logging::event($level, $event, format_args!($($arg)*))
+    };
+}
+
 mod cleanup;
 mod control;
 mod logging;
 mod media;
-
-macro_rules! log {
-    ($level:expr, $event:expr, $($arg:tt)*) => {
-        logging::event($level, $event, format_args!($($arg)*))
-    };
-}
 
 use anyhow::{Context, Result, anyhow, bail};
 use arboard::Clipboard;
@@ -130,56 +130,7 @@ async fn run() -> Result<()> {
         if let Some(active) = recording.take() {
             let audio_path = stop_recording(active)?;
             play_click(false);
-
-            if audio_path
-                .metadata()
-                .map(|metadata| metadata.len() <= 44)
-                .unwrap_or(true)
-            {
-                log!("WARN", "recording_empty", "cycle={cycle}");
-                let _ = fs::remove_file(audio_path);
-                continue;
-            }
-
-            println!("Transcribing...");
-            match transcribe(&client, &api_key, &model, &audio_path).await {
-                Ok(text) if !text.trim().is_empty() => {
-                    log!("INFO", "transcript", "cycle={cycle} text={text:?}");
-                    println!("Cleaning up...");
-                    let text = match cleaner.clean(&client, &text).await {
-                        Ok(cleaned) => {
-                            log!(
-                                "INFO",
-                                "cleaned_transcript",
-                                "cycle={cycle} text={cleaned:?}"
-                            );
-                            cleaned
-                        }
-                        Err(error) => {
-                            log!(
-                                "WARN",
-                                "cleanup_failed",
-                                "cycle={cycle} using_raw_transcript=true {error:#}"
-                            );
-                            text
-                        }
-                    };
-                    if text.is_empty() {
-                        log!(
-                            "INFO",
-                            "cleanup_empty",
-                            "cycle={cycle} skipping_insertion=true"
-                        );
-                        let _ = fs::remove_file(audio_path);
-                        continue;
-                    }
-                    if let Err(error) = paste_and_submit(&text) {
-                        log!("ERROR", "insertion_failed", "cycle={cycle} {error:#}");
-                    }
-                }
-                Ok(_) => log!("WARN", "transcript_empty", "cycle={cycle}"),
-                Err(error) => log!("ERROR", "transcription_failed", "cycle={cycle} {error:#}"),
-            }
+            process_recording(&client, &api_key, &model, &cleaner, &audio_path, cycle).await;
             let _ = fs::remove_file(audio_path);
         } else {
             cycle += 1;
@@ -192,6 +143,69 @@ async fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn process_recording(
+    client: &reqwest::Client,
+    api_key: &str,
+    model: &str,
+    cleaner: &cleanup::Cleaner,
+    audio_path: &Path,
+    cycle: u64,
+) {
+    if audio_path
+        .metadata()
+        .map(|metadata| metadata.len() <= 44)
+        .unwrap_or(true)
+    {
+        log!("WARN", "recording_empty", "cycle={cycle}");
+        return;
+    }
+
+    println!("Transcribing...");
+    let text = match transcribe(client, api_key, model, audio_path).await {
+        Ok(text) if !text.trim().is_empty() => text,
+        Ok(_) => {
+            log!("WARN", "transcript_empty", "cycle={cycle}");
+            return;
+        }
+        Err(error) => {
+            log!("ERROR", "transcription_failed", "cycle={cycle} {error:#}");
+            return;
+        }
+    };
+    log!("INFO", "transcript", "cycle={cycle} text={text:?}");
+
+    println!("Cleaning up...");
+    let text = match cleaner.clean(client, &text).await {
+        Ok(cleaned) => {
+            log!(
+                "INFO",
+                "cleaned_transcript",
+                "cycle={cycle} text={cleaned:?}"
+            );
+            cleaned
+        }
+        Err(error) => {
+            log!(
+                "WARN",
+                "cleanup_failed",
+                "cycle={cycle} using_raw_transcript=true {error:#}"
+            );
+            text
+        }
+    };
+    if text.is_empty() {
+        log!(
+            "INFO",
+            "cleanup_empty",
+            "cycle={cycle} skipping_insertion=true"
+        );
+        return;
+    }
+    if let Err(error) = paste_and_submit(&text) {
+        log!("ERROR", "insertion_failed", "cycle={cycle} {error:#}");
+    }
 }
 
 fn start_hotkey_listener(tx: tokio_mpsc::UnboundedSender<()>) -> Result<()> {
@@ -224,10 +238,11 @@ fn start_hotkey_listener(tx: tokio_mpsc::UnboundedSender<()>) -> Result<()> {
                     event.id,
                     event.state
                 );
-                if event.id == hotkey_id && event.state == HotKeyState::Pressed {
-                    if tx.send(()).is_err() {
-                        break;
-                    }
+                if event.id == hotkey_id
+                    && event.state == HotKeyState::Pressed
+                    && tx.send(()).is_err()
+                {
+                    break;
                 }
             }
             Ok(())
@@ -334,13 +349,11 @@ async fn transcribe(
         .send()
         .await
         .context("request to Groq failed")?;
-    let status = response.status();
-    log!("INFO", "groq_response", "status={status}");
-    if !status.is_success() {
-        bail!("Groq returned {status}: {}", response.text().await?);
-    }
-
-    let text = response.json::<TranscriptionResponse>().await?.text;
+    let text = check_groq_response(response)
+        .await?
+        .json::<TranscriptionResponse>()
+        .await?
+        .text;
     log!(
         "INFO",
         "transcription_completed",
@@ -357,21 +370,25 @@ async fn list_models(api_key: &str) -> Result<()> {
         .send()
         .await
         .context("request to Groq failed")?;
+    let models = check_groq_response(response)
+        .await?
+        .json::<ModelsResponse>()
+        .await?
+        .data;
+    println!("Speech models available on this account:");
+    for model in models.iter().filter(|model| model.id.contains("whisper")) {
+        println!("- {}", model.id);
+    }
+    Ok(())
+}
+
+async fn check_groq_response(response: reqwest::Response) -> Result<reqwest::Response> {
     let status = response.status();
     log!("INFO", "groq_response", "status={status}");
     if !status.is_success() {
         bail!("Groq returned {status}: {}", response.text().await?);
     }
-
-    let models = response.json::<ModelsResponse>().await?.data;
-    println!("Speech models available on this account:");
-    for model in models
-        .iter()
-        .filter(|model| model.id.contains("whisper") || model.id.contains("distil-whisper"))
-    {
-        println!("- {}", model.id);
-    }
-    Ok(())
+    Ok(response)
 }
 
 fn play_click(start: bool) {
@@ -403,18 +420,15 @@ fn play_click(start: bool) {
 }
 
 fn paste_and_submit(text: &str) -> Result<()> {
+    let wayland = env::var_os("WAYLAND_DISPLAY").is_some();
     log!(
         "INFO",
         "insertion_started",
         "backend={} characters={}",
-        if env::var_os("WAYLAND_DISPLAY").is_some() {
-            "wtype"
-        } else {
-            "xdotool"
-        },
+        if wayland { "wtype" } else { "xdotool" },
         text.chars().count()
     );
-    if env::var_os("WAYLAND_DISPLAY").is_some() {
+    if wayland {
         return type_on_wayland(text);
     }
 

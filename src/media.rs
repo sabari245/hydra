@@ -3,6 +3,14 @@ use std::process::Command;
 #[derive(Debug, Default)]
 pub struct PausedPlayers(Vec<String>);
 
+fn has_status(player: &str, expected: &str) -> bool {
+    matches!(
+        Command::new("playerctl").args(["--player", player, "status"]).output(),
+        Ok(output) if output.status.success()
+            && String::from_utf8_lossy(&output.stdout).trim() == expected
+    )
+}
+
 impl PausedPlayers {
     pub fn pause() -> Self {
         let mut paused = Self::default();
@@ -10,16 +18,12 @@ impl PausedPlayers {
             Ok(output) if output.status.success() => output,
             Ok(_) => return paused,
             Err(error) => {
-                crate::logging::event("WARN", "media_unavailable", format_args!("{error}"));
+                log!("WARN", "media_unavailable", "{error}");
                 return paused;
             }
         };
         for player in String::from_utf8_lossy(&output.stdout).lines() {
-            let status = Command::new("playerctl")
-                .args(["--player", player, "status"])
-                .output();
-            if !matches!(status, Ok(output) if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "Playing")
-            {
+            if !has_status(player, "Playing") {
                 continue;
             }
             match Command::new("playerctl")
@@ -27,17 +31,13 @@ impl PausedPlayers {
                 .output()
             {
                 Ok(output) if output.status.success() => {
-                    crate::logging::event(
-                        "INFO",
-                        "media_paused",
-                        format_args!("player={player:?}"),
-                    );
+                    log!("INFO", "media_paused", "player={player:?}");
                     paused.0.push(player.to_owned());
                 }
-                result => crate::logging::event(
+                result => log!(
                     "WARN",
                     "media_pause_failed",
-                    format_args!("player={player:?} result={result:?}"),
+                    "player={player:?} result={result:?}"
                 ),
             }
         }
@@ -48,26 +48,20 @@ impl PausedPlayers {
 impl Drop for PausedPlayers {
     fn drop(&mut self) {
         for player in &self.0 {
-            let status = Command::new("playerctl")
-                .args(["--player", player, "status"])
-                .output();
-            if !matches!(status, Ok(output) if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "Paused")
-            {
+            if !has_status(player, "Paused") {
                 continue;
             }
             match Command::new("playerctl")
                 .args(["--player", player, "play"])
                 .output()
             {
-                Ok(output) if output.status.success() => crate::logging::event(
-                    "INFO",
-                    "media_resumed",
-                    format_args!("player={player:?}"),
-                ),
-                result => crate::logging::event(
+                Ok(output) if output.status.success() => {
+                    log!("INFO", "media_resumed", "player={player:?}")
+                }
+                result => log!(
                     "WARN",
                     "media_resume_failed",
-                    format_args!("player={player:?} result={result:?}"),
+                    "player={player:?} result={result:?}"
                 ),
             }
         }
