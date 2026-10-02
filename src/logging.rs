@@ -3,17 +3,17 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 static LOG: OnceLock<Mutex<File>> = OnceLock::new();
 
-pub fn init() -> Result<PathBuf> {
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("logs");
-    fs::create_dir_all(&directory).context("could not create log directory")?;
-    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+pub fn init(directory: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(directory)
+        .with_context(|| format!("could not create log directory {}", directory.display()))?;
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
     let path = directory.join("hydra.log");
     let file = OpenOptions::new()
         .create(true)
@@ -40,10 +40,10 @@ pub fn event(level: &str, name: &str, detail: std::fmt::Arguments<'_>) {
         match log.lock() {
             Ok(mut file) => {
                 if let Err(error) = file.write_all(line.as_bytes()).and_then(|_| file.flush()) {
-                    eprintln!("could not write Hydra log: {error}");
+                    eprintln!("could not write Hydra STT log: {error}");
                 }
             }
-            Err(error) => eprintln!("could not lock Hydra log: {error}"),
+            Err(error) => eprintln!("could not lock Hydra STT log: {error}"),
         }
     }
 }

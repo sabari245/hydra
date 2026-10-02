@@ -1,7 +1,13 @@
 [package]
-name = "hydra"
+name = "hydra-stt"
 version = "0.1.0"
 edition = "2024"
+description = "Push-to-toggle speech-to-text dictation for Linux"
+repository = "https://github.com/sabari245/hydra"
+readme = "README.md"
+license = "MIT"
+authors = ["Vorden <sabari2004@hotmail.com>"]
+publish = false
 
 [dependencies]
 anyhow = "1"
@@ -10,4 +16,26 @@ global-hotkey = "0.6"
 nix = { version = "0.29", features = ["signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "signal", "sync"] }
+toml = "0.9"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[package.metadata.deb]
+maintainer = "Vorden <sabari2004@hotmail.com>"
+section = "sound"
+priority = "optional"
+depends = "libc6 (>= 2.31), alsa-utils, pulseaudio-utils"
+recommends = "wtype | xdotool, playerctl"
+extended-description = """\
+Hydra STT records speech on a hotkey, transcribes it with Groq Whisper, \
+optionally cleans the transcript, and types it into the focused window. \
+Run `hydra-stt` once to create ~/.config/hydra-stt/config.toml."""
+assets = [
+    ["target/release/hydra-stt", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/hydra-stt/", "644"],
+    ["config.example.toml", "usr/share/doc/hydra-stt/", "644"],
+]

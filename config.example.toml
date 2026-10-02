@@ -1,0 +1,55 @@
+# Hydra STT configuration.
+#
+# Location: ~/.config/hydra-stt/config.toml ($XDG_CONFIG_HOME is respected,
+# and HYDRA_STT_CONFIG can point to another file).
+#
+# This file may hold API keys, so keep it private (chmod 600). Hydra STT
+# creates it that way and warns if other users can read it. Environment
+# variables GROQ_API_KEY, GROQ_MODEL and ISO_QUANT_API_KEY override the
+# values below, if you prefer to keep keys out of this file.
+
+[groq]
+# Speech-to-text. Required.
+api_key = ""
+# Run `hydra-stt --models` to list the models on your account.
+model = "whisper-large-v3-turbo"
+
+[cleanup]
+# Removes filler words, false starts and repeats before typing.
+# When the cleanup request fails, the raw transcript is typed instead.
+enabled = true
+api_key = ""
+api_url = "https://api.isoquant.ai/v1/chat/completions"
+model = "glm-5.3-flash"
+timeout_secs = 30
+# Leave empty to use the built-in prompt.
+prompt = ""
+
+[hotkey]
+# X11 only. On Wayland, bind `hydra-stt --toggle` in your compositor instead.
+binding = "Super+Space"
+
+[recording]
+# ALSA capture device passed to `arecord -D`. Empty uses the system default.
+# List devices with `arecord -L`.
+device = ""
+
+[sounds]
+enabled = true
+# Percent, 0-100.
+volume = 90
+# Custom WAV files. Comment out to use the built-in cues.
+# press = "/path/to/press.wav"
+# release = "/path/to/release.wav"
+
+[media]
+# Pause MPRIS players (via playerctl) while recording and resume them after.
+pause_while_recording = true
+
+[output]
+# Press Enter after typing the transcript.
+press_enter = true
+
+[logging]
+# Defaults to ~/.local/state/hydra-stt ($XDG_STATE_HOME is respected).
+# dir = "/path/to/logs"

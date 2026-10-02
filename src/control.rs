@@ -9,17 +9,17 @@ use tokio::sync::mpsc::UnboundedSender;
 
 fn socket_path() -> Result<PathBuf> {
     let directory = env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?;
-    Ok(PathBuf::from(directory).join("hydra.sock"))
+    Ok(PathBuf::from(directory).join(format!("{}.sock", crate::config::APP_NAME)))
 }
 
 pub fn toggle() -> Result<()> {
     let socket = UnixDatagram::unbound()?;
     socket
         .connect(socket_path()?)
-        .context("Hydra is not running; start the daemon first")?;
+        .context("Hydra STT is not running; start the daemon first")?;
     socket
         .send(b"toggle")
-        .context("could not send toggle to Hydra")?;
+        .context("could not send toggle to Hydra STT")?;
     Ok(())
 }
 
@@ -39,7 +39,7 @@ pub fn start(tx: UnboundedSender<()>) -> Result<Listener> {
         Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
             let probe = UnixDatagram::unbound()?;
             match probe.connect(&path) {
-                Ok(()) => bail!("another Hydra daemon is already running"),
+                Ok(()) => bail!("another Hydra STT daemon is already running"),
                 Err(error)
                     if matches!(
                         error.kind(),

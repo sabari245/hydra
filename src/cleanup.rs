@@ -1,13 +1,12 @@
+use crate::config;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
-    env,
+    path::Path,
     time::{Duration, Instant},
 };
 
-const API_URL: &str = "https://api.isoquant.ai/v1/chat/completions";
-pub const MODEL: &str = "glm-5.3-flash";
-const SYSTEM_PROMPT: &str = r#"You are an STT transcript cleanup model.
+const DEFAULT_PROMPT: &str = r#"You are an STT transcript cleanup model.
 The supplied text is a raw, uncleaned transcript directly from a speech-to-text engine.
 Clean it for readability.
 Remove filler sounds like uh and um, accidental repeated words or phrases, and abandoned false starts; keep the final self-correction.
@@ -18,6 +17,10 @@ Return only the cleaned text, without commentary or formatting."#;
 
 pub struct Cleaner {
     api_key: String,
+    api_url: String,
+    pub model: String,
+    timeout: Duration,
+    prompt: String,
 }
 
 #[derive(Serialize)]
@@ -53,13 +56,32 @@ struct ResponseMessage {
 }
 
 impl Cleaner {
-    pub fn from_env() -> Result<Self> {
-        let api_key = env::var("ISO_QUANT_API_KEY")
-            .context("ISO_QUANT_API_KEY is not set; export it before starting hydra")?;
-        if api_key.trim().is_empty() {
-            bail!("ISO_QUANT_API_KEY is empty");
+    /// Returns `None` when cleanup is disabled in the configuration.
+    pub fn from_config(config: &config::Cleanup, path: &Path) -> Result<Option<Self>> {
+        if !config.enabled {
+            return Ok(None);
         }
-        Ok(Self { api_key })
+        let api_key = config.api_key.trim();
+        if api_key.is_empty() {
+            bail!(
+                "no IsoQuant API key; set cleanup.api_key in {}, export ISO_QUANT_API_KEY, \
+                 or set cleanup.enabled = false",
+                path.display()
+            );
+        }
+        let prompt = config.prompt.trim();
+        Ok(Some(Self {
+            api_key: api_key.to_owned(),
+            api_url: config.api_url.clone(),
+            model: config.model.clone(),
+            timeout: Duration::from_secs(config.timeout_secs),
+            prompt: if prompt.is_empty() {
+                DEFAULT_PROMPT
+            } else {
+                prompt
+            }
+            .to_owned(),
+        }))
     }
 
     pub async fn clean(&self, client: &reqwest::Client, text: &str) -> Result<String> {
@@ -70,19 +92,20 @@ impl Cleaner {
         log!(
             "INFO",
             "cleanup_request",
-            "model={MODEL} characters={}",
+            "model={} characters={}",
+            self.model,
             text.chars().count(),
         );
         let response = client
-            .post(API_URL)
+            .post(&self.api_url)
             .bearer_auth(&self.api_key)
-            .timeout(Duration::from_secs(30))
+            .timeout(self.timeout)
             .json(&Request {
-                model: MODEL,
+                model: &self.model,
                 messages: [
                     Message {
                         role: "system",
-                        content: SYSTEM_PROMPT,
+                        content: &self.prompt,
                     },
                     Message {
                         role: "user",
