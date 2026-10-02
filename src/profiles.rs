@@ -1,13 +1,10 @@
 //! Post-processing profiles. Each profile is a system prompt run on the
 //! transcript by an IsoQuant chat model. With more than one profile, the
 //! IsoQuant System One decision model picks which one handles the transcript.
-//! Profiles with tools, like the built-in "computer" profile, run the
-//! computer-control agent instead of returning text to type.
 
 use crate::{
-    agent, config,
+    config,
     history::{History, HistoryEntry},
-    tools::memory::Memory,
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -51,29 +48,6 @@ const PROMPT_DESCRIPTION: &str = "A prompt or instruction for an AI assistant or
     Also any time the user mentions a prompt, for example \"type out a prompt\", \
     \"here is my prompt\", or \"the prompt should say\".";
 
-const COMPUTER_PROMPT: &str = r#"You are Hydra, an agent that operates the user's Linux desktop for them. The user spoke a request; you receive the raw speech-to-text transcript, which can contain recognition errors, filler words, and self-corrections, so work out what they actually want.
-Carry out the request with your tools, then reply with one or two short sentences saying what you did, or what stopped you. That reply is shown as a desktop notification. Nothing you write is typed anywhere unless you use the computer tool's type action.
-
-How to work:
-- For anything on screen, look first with a screenshot. Every click, scroll, drag, key press, and typing action returns a new screenshot taken right after it.
-- Validate every step before the next one: look at that screenshot and check that the action did what you intended. Did the click land on the right element, did the right field get focus, did the text appear correctly, did the page scroll and what is now visible, did the app or page open? If not, work out why and correct it instead of carrying on. Use zoom to read small text.
-- Check command and file results the same way: read the output and confirm it succeeded.
-- Before your final reply, confirm the end state matches the request, with a screenshot when the task is visual. Only say something is done when you have seen that it is; otherwise say what you saw instead.
-- Skip screenshots for tasks that do not involve the screen, such as files or commands.
-- Prefer commands and the keyboard over the mouse when they are reliable. Launch apps with `setsid -f APP >/dev/null 2>&1` and open URLs or files with `setsid -f xdg-open TARGET >/dev/null 2>&1`, then wait a second or two before the next screenshot.
-- Useful keys: ctrl+l focuses the browser address bar, ctrl+t opens a tab, Tab and shift+Tab move between form fields, Escape closes dialogs.
-- To fill a form, focus the first field, type, and move to the next field with Tab, checking with screenshots as you go.
-- Bash runs as the user in the home directory with no terminal and no stdin. Never start interactive programs.
-- Never do anything destructive or hard to undo, such as deleting or overwriting files, killing programs, changing system settings, sending messages or emails, buying things, or submitting forms, unless the user clearly asked for exactly that. You cannot ask questions, so when the request is unclear, do the safe part and say what is left.
-- Keep long-term memory up to date: when the user asks you to remember something, or states a lasting fact or preference such as a name, an email address, or how they like things done, save it with the memory tool, in a file that fits (for example /memories/people.md or /memories/preferences.md). Fix or remove notes that turn out to be wrong.
-- Stop as soon as the request is done, and do nothing extra."#;
-const COMPUTER_DESCRIPTION: &str = "The user is talking to the assistant and asking it to \
-    act on the computer or look at it right now: open, close, or switch apps, windows, or \
-    websites, search the web, click, scroll, fill out a form, type something somewhere for them, \
-    play or pause media, find or move files, run a command, check or describe what is on the \
-    screen, or remember something. Usually phrased as a command or question to the assistant, \
-    such as \"open the browser\", \"can you fill out this form\", or \"what's on my screen\".";
-
 const SINGLE_PARAGRAPH: &str = "Write it as a single paragraph without line breaks.";
 const PARAGRAPHS: &str = "Use a line break only between clearly separate paragraphs or list items.";
 
@@ -82,15 +56,6 @@ struct Profile {
     description: String,
     model: String,
     prompt: String,
-    tools: bool,
-}
-
-/// What a processed transcript produced.
-pub enum Output {
-    /// Text to type into the focused window.
-    Text(String),
-    /// An agent acted on the request; the summary is for the user only.
-    Done(String),
 }
 
 struct Router {
@@ -107,10 +72,8 @@ pub struct Pipeline {
     /// The default profile is always first.
     profiles: Vec<Profile>,
     router: Router,
-    memory: Option<Memory>,
     history: Option<History>,
     history_entries: usize,
-    computer: config::Computer,
 }
 
 #[derive(Serialize)]
@@ -163,7 +126,6 @@ pub fn builtin(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
         DEFAULT => Some((DEFAULT_PROMPT, DEFAULT_DESCRIPTION)),
         "prompt" => Some((PROMPT_PROMPT, PROMPT_DESCRIPTION)),
-        "computer" => Some((COMPUTER_PROMPT, COMPUTER_DESCRIPTION)),
         _ => None,
     }
 }
@@ -177,13 +139,11 @@ fn resolve(config: &config::Config, path: &Path) -> Result<Vec<Profile>> {
     };
     let mut profiles = Vec::new();
     for (name, profile) in &config.profiles.0 {
-        let tools = profile.tools.unwrap_or(name == "computer");
         let (builtin_prompt, builtin_description) = match builtin(name) {
             Some((prompt, description)) => (Some(prompt), description),
             None => (None, ""),
         };
         let prompt = match (profile.prompt.trim(), builtin_prompt) {
-            ("", Some(builtin)) if tools => builtin.to_owned(),
             ("", Some(builtin)) => format!("{builtin}\n{suffix}"),
             ("", None) => bail!("profiles.{name}.prompt is required"),
             (custom, _) => custom.to_owned(),
@@ -197,16 +157,12 @@ fn resolve(config: &config::Config, path: &Path) -> Result<Vec<Profile>> {
             description,
             model: profile.model.clone(),
             prompt,
-            tools,
         });
     }
     let Some(index) = profiles.iter().position(|profile| profile.name == DEFAULT) else {
         bail!("profiles.{DEFAULT} is required in {}", path.display());
     };
     profiles.swap(0, index);
-    if profiles[0].tools {
-        bail!("profiles.{DEFAULT} cannot use tools; it is the fallback for dictation");
-    }
     if profiles.len() > 1
         && let Some(profile) = profiles
             .iter()
@@ -249,9 +205,6 @@ impl Pipeline {
         } else {
             None
         };
-        let memory = Memory::open(&data_dir)
-            .inspect_err(|error| log!("WARN", "memory_unavailable", "{error:#}"))
-            .ok();
         let base = isoquant.api_url.trim_end_matches('/');
         Ok(Some(Self {
             api_key: api_key.to_owned(),
@@ -264,10 +217,8 @@ impl Pipeline {
                 instructions: config.router.instructions.clone(),
                 min_confidence: config.router.min_confidence,
             },
-            memory,
             history,
             history_entries: config.history.entries,
-            computer: config.computer.clone(),
         }))
     }
 
@@ -280,15 +231,15 @@ impl Pipeline {
 
     /// Routes the transcript to a profile and returns its output. Never fails:
     /// text profiles fall back to the default profile, then to the raw
-    /// transcript. A failed agent run types nothing.
+    /// transcript.
     pub async fn process(
         &self,
         client: &reqwest::Client,
         text: &str,
         forced: Option<&str>,
-    ) -> Output {
+    ) -> String {
         if text.trim().is_empty() {
-            return Output::Text(String::new());
+            return String::new();
         }
         let default = &self.profiles[0];
         if forced.is_some() || self.profiles.len() == 1 {
@@ -328,7 +279,7 @@ impl Pipeline {
             text.to_owned()
         });
         self.record(default, HistoryEntry::new(text, &output), probabilities);
-        Output::Text(output)
+        output
     }
 
     /// Runs one profile, falling back like `process` does.
@@ -338,39 +289,7 @@ impl Pipeline {
         profile: &Profile,
         text: &str,
         probabilities: Option<BTreeMap<String, f64>>,
-    ) -> Output {
-        if profile.tools {
-            let settings = agent::Settings {
-                api_key: &self.api_key,
-                chat_url: &self.chat_url,
-                timeout: self.timeout,
-                model: &profile.model,
-                computer: &self.computer,
-                memory: self.memory.as_ref(),
-            };
-            let prompt = self.system_prompt(profile);
-            return match agent::run(client, &settings, &prompt, text).await {
-                Ok(outcome) => {
-                    let mut entry = HistoryEntry::new(text, &outcome.summary);
-                    entry.actions = outcome.actions;
-                    self.record(profile, entry, probabilities);
-                    Output::Done(outcome.summary)
-                }
-                Err(error) => {
-                    log!(
-                        "ERROR",
-                        "agent_failed",
-                        "profile={} {error:#}",
-                        profile.name
-                    );
-                    let message = format!("Could not finish: {error:#}");
-                    if self.computer.notify {
-                        agent::notify("Hydra STT failed", &message, None);
-                    }
-                    Output::Done(message)
-                }
-            };
-        }
+    ) -> String {
         let output = match self.run(client, profile, text).await {
             Ok(output) => output,
             Err(error) if profile.name != DEFAULT => {
@@ -390,19 +309,16 @@ impl Pipeline {
                     "profile={} using_raw_transcript=true {error:#}",
                     profile.name
                 );
-                return Output::Text(text.to_owned());
+                return text.to_owned();
             }
         };
         self.record(profile, HistoryEntry::new(text, &output), probabilities);
-        Output::Text(output)
+        output
     }
 
-    /// The profile prompt with memory notes and the profile's recent history.
+    /// The profile prompt with the profile's recent history.
     fn system_prompt(&self, profile: &Profile) -> String {
         let mut prompt = profile.prompt.clone();
-        if let Some(memory) = &self.memory {
-            prompt.push_str(&memory.prompt());
-        }
         if let Some(history) = &self.history {
             prompt.push_str(&history.prompt(&profile.name, self.history_entries));
         }

@@ -37,7 +37,7 @@ const PAGES: [(Page, &str); 7] = [
     (Page::Speech, "Speech & recording"),
     (Page::Processing, "Processing"),
     (Page::Profiles, "Profiles"),
-    (Page::Agent, "Computer agent"),
+    (Page::Agent, "Computer agent (upcoming)"),
     (Page::Output, "Output & logs"),
 ];
 
@@ -684,14 +684,29 @@ impl Settings {
                     ui.add(egui::Slider::new(&mut router.min_confidence, 0.0..=1.0));
                     ui.end_row();
                 });
+            ui.add_space(16.0);
+
+            section(
+                ui,
+                "History",
+                "Each profile sees its last few requests, so it can resolve \"do that again\" \
+                 and keep spellings consistent.",
+            );
+            let history = &mut self.config.history;
+            ui.checkbox(&mut history.enabled, "Keep history");
+            ui.add_enabled_ui(history.enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Entries per profile");
+                    ui.add(egui::DragValue::new(&mut history.entries).range(0..=100));
+                });
+            });
         });
     }
 
     fn profiles_page(&mut self, ui: &mut egui::Ui) {
         page_title(ui, "Profiles");
         ui.label(
-            "Each profile rewrites the transcript with its prompt, or, with agent tools, acts \
-             on it. \"default\" is required and is the fallback. Empty fields on the built-in \
+            "Each profile rewrites the transcript with its prompt. \"default\" is required and is the fallback. Empty fields on the built-in \
              profiles use the built-in text, shown greyed out.",
         );
         ui.add_space(12.0);
@@ -752,65 +767,18 @@ impl Settings {
                 self.new_profile.clear();
             }
         });
-        ui.weak("Names use letters, digits, - and _. Built-in names: default, prompt, computer.");
+        ui.weak("Names use letters, digits, - and _. Built-in names: default, prompt.");
     }
 
     fn agent_page(&mut self, ui: &mut egui::Ui) {
         page_title(ui, "Computer agent");
+        ui.label(egui::RichText::new("Upcoming").color(ui.visuals().warn_fg_color));
+        ui.add_space(8.0);
         ui.label(
-            "The agent takes screenshots, moves and clicks the mouse, types, runs commands, \
-             and reads and writes files, all as you. Screenshots are sent to IsoQuant. Press \
-             your toggle key while it works to stop it.",
+            "An agent that carries out spoken requests on your desktop: opening apps and \
+             websites, filling out forms, running commands, and answering questions about \
+             what is on screen. It is being reworked and will return in a later release.",
         );
-        ui.add_space(12.0);
-        let computer = &mut self.config.computer;
-        egui::Grid::new("computer")
-            .num_columns(2)
-            .spacing([12.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Maximum steps");
-                ui.add(egui::DragValue::new(&mut computer.max_steps).range(1..=500));
-                ui.end_row();
-                ui.label("Command timeout");
-                ui.add(
-                    egui::DragValue::new(&mut computer.command_timeout_secs)
-                        .range(1..=3600)
-                        .suffix(" s"),
-                );
-                ui.end_row();
-                ui.label("Screenshot size");
-                ui.add(
-                    egui::DragValue::new(&mut computer.screenshot_max_size)
-                        .range(256..=4096)
-                        .suffix(" px"),
-                )
-                .on_hover_text("Longest edge of screenshots sent to the model");
-                ui.end_row();
-            });
-        ui.checkbox(
-            &mut computer.notify,
-            "Show notifications when it starts and finishes",
-        );
-        ui.checkbox(
-            &mut computer.allow_privileged,
-            "Allow sudo, su, pkexec, doas and run0 in commands",
-        );
-        ui.add_space(16.0);
-
-        section(
-            ui,
-            "History",
-            "Each profile sees its last few requests, so it can resolve \"do that again\" \
-             and keep spellings consistent.",
-        );
-        let history = &mut self.config.history;
-        ui.checkbox(&mut history.enabled, "Keep history");
-        ui.add_enabled_ui(history.enabled, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Entries per profile");
-                ui.add(egui::DragValue::new(&mut history.entries).range(0..=100));
-            });
-        });
     }
 
     fn output_page(&mut self, ui: &mut egui::Ui) {
@@ -856,23 +824,6 @@ fn profile_editor(
         .show(ui, |ui| {
             ui.label("Model");
             text(ui, &mut profile.model, "glm-5.3-flash");
-            ui.end_row();
-
-            ui.label("Agent tools");
-            let default_tools = name == "computer";
-            let label = |tools: Option<bool>| match tools {
-                None if default_tools => "Default (on)",
-                None => "Default (off)",
-                Some(true) => "On",
-                Some(false) => "Off",
-            };
-            egui::ComboBox::from_id_salt(("tools", name))
-                .selected_text(label(profile.tools))
-                .show_ui(ui, |ui| {
-                    for tools in [None, Some(true), Some(false)] {
-                        ui.selectable_value(&mut profile.tools, tools, label(tools));
-                    }
-                });
             ui.end_row();
 
             ui.label("Description")

@@ -36,11 +36,16 @@ Updated: 2026-10-02.
    default profile; profile error → default output; default error → raw text.
 6. Type with `wtype`. Enter only with
    `press_enter = true`.
-7. A profile with tools (built-in `computer`) runs the agent in `src/agent.rs`
-   instead and types nothing: a loop of IsoQuant chat calls with tools, the
-   two newest screenshots kept as images, a summary notification at the end.
-   Processing runs as a task; a toggle while it runs aborts it, and each
-   bash command's process group is killed on drop.
+
+## Computer agent (removed for now, upcoming)
+
+The computer-control agent (`src/agent.rs`, `src/tools/`, screenshots via
+libwayshot, mouse via wlr-virtual-pointer, long-term memory) was removed on
+2026-10-02 to ship dictation first. Its last version is the annotated git tag
+`computer-agent`. Config files from that time still load: `[computer]` and
+`tools` keys are ignored, a `[profiles.computer]` with an empty prompt is
+dropped, and saving from the window removes them. The window shows it as
+"Computer agent (upcoming)".
 
 ## Files
 
@@ -54,16 +59,10 @@ Updated: 2026-10-02.
   over the control socket, and the systemd user unit for start at login
 - `assets/hydra-stt.desktop` — menu entry; installed by the .deb and by
   `install.sh` (with an absolute Exec path)
-- `src/profiles.rs` — profiles, built-in prompts, System One routing, memory
+- `src/profiles.rs` — profiles, built-in prompts, System One routing,
   and history injection
-- `src/agent.rs` — computer agent loop (shape of Anthropic's `loop.py`)
-- `src/tools/` — agent tools, each ported from Anthropic MIT reference code:
-  `computer.rs` (computer.py), `bash.rs` (shell.py), `editor.rs` (editor.py),
-  `memory.rs` (claude-cookbooks memory_tool.py)
-- `src/screenshot.rs` — libwayshot capture, JPEG encode
-- `src/pointer.rs` — wlr-virtual-pointer mouse (absolute, per monitor)
 - `src/history.rs` — per-profile JSONL history
-- `src/typing.rs` — wtype output, chunking, agent typing
+- `src/typing.rs` — wtype output and chunking
 - `src/control.rs` — compositor toggle socket
 - `src/logging.rs` — private diagnostic log
 - `src/media.rs` — MPRIS pause/resume
@@ -75,12 +74,12 @@ Updated: 2026-10-02.
 ## Configuration
 
 `~/.config/hydra-stt/config.toml` is created on first run (dir `700`, file
-`600`). It holds API keys, IsoQuant/router/profile/agent/history settings, ALSA device,
+`600`). It holds API keys, IsoQuant/router/profile/history settings, ALSA device,
 sound volume/files, media pause, Enter, and log dir. `GROQ_API_KEY`,
 `GROQ_MODEL`, `ISO_QUANT_API_KEY` env vars override the file;
 `HYDRA_STT_CONFIG` selects another file. Unknown keys are rejected.
 
-Data: release builds keep memory (`memories/`) and history (`history/`) in
+Data: release builds keep history (`history/`) in
 `~/.local/share/hydra-stt`; debug builds use `data/` in the checkout.
 
 Logs: release builds use `~/.local/state/hydra-stt/hydra.log`; debug builds use
@@ -116,22 +115,8 @@ Characters landing on modifier keycodes (29 Left Ctrl, 42 Left Shift, ...) were
 swallowed: in a 4.6k-character dictation, capital I and R vanished. Typing now
 splits text into wtype calls of at most 28 distinct characters each.
 
-## Computer agent notes
-
-- Niri's screencopy does not draw the cursor, so the agent cannot see the
-  pointer; it works from coordinates in the latest screenshot.
-- ydotool was rejected for the mouse: its absolute moves go through pointer
-  acceleration. Niri exposes `zwlr_virtual_pointer_manager_v1` v2, which takes
-  absolute positions per output.
-- System One routes computer requests reliably with the current description;
-  below `min_confidence` they fall back to default (text is typed instead).
-- Live-tested: describe a monitor, save memory, count files with bash, move
-  the pointer. Not yet tested live: clicking, typing into forms, multi-step
-  browser tasks.
-
 ## Known limitations / next steps
 
-- No systemd user unit or autostart yet.
 - A toggle while processing cancels it; there is no separate cancel command.
 - Groq requests have no explicit timeout or retry.
 - No `.rpm` or AUR package yet.

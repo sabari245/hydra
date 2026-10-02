@@ -4,18 +4,14 @@ macro_rules! log {
     };
 }
 
-mod agent;
 mod config;
 mod control;
 mod history;
 mod logging;
 mod media;
-mod pointer;
 mod profiles;
-mod screenshot;
 mod service;
 mod settings;
-mod tools;
 mod typing;
 
 use anyhow::{Context, Result, bail};
@@ -51,8 +47,7 @@ Commands:
   --toggle       Start or stop recording in the running daemon
   --stop         Stop the running daemon
   --process [P]  Process a transcript from stdin, routed to a profile or
-                 always through profile P, and print the text to type or
-                 the agent's summary
+                 always through profile P, and print the text to type
   --models       List the speech models on your Groq account
   --config-path  Print the configuration file path
   --help         Show this help
@@ -153,12 +148,10 @@ async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Re
             .context("IsoQuant processing is disabled in the configuration")?;
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text)?;
-        match pipeline
+        let output = pipeline
             .process(&reqwest::Client::new(), &text, profile.as_deref())
-            .await
-        {
-            profiles::Output::Text(text) | profiles::Output::Done(text) => println!("{text}"),
-        }
+            .await;
+        println!("{output}");
         return Ok(());
     }
     let api_key: Arc<str> = config.groq_api_key(config_path)?.into();
@@ -230,8 +223,7 @@ async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Re
                 let _ = fs::remove_file(audio_path);
             }));
         } else if busy {
-            // A toggle while a transcript is being processed cancels it,
-            // including any running agent and its commands.
+            // A toggle while a transcript is being processed cancels it.
             if let Some(task) = processing.take() {
                 task.abort();
             }
@@ -303,13 +295,7 @@ async fn process_recording(
         None => text,
         Some(pipeline) => {
             println!("Processing...");
-            match pipeline.process(client, &text, None).await {
-                profiles::Output::Text(text) => text,
-                profiles::Output::Done(summary) => {
-                    println!("{summary}");
-                    return;
-                }
-            }
+            pipeline.process(client, &text, None).await
         }
     };
     if text.is_empty() {

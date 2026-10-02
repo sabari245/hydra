@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, de::IgnoredAny};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -18,7 +18,10 @@ pub struct Config {
     pub isoquant: IsoQuant,
     pub router: Router,
     pub profiles: Profiles,
-    pub computer: Computer,
+    /// `[computer]` configured the computer agent, which was removed for now.
+    /// Accepted and ignored so older files still load.
+    #[serde(rename = "computer")]
+    removed_computer: IgnoredAny,
     pub history: History,
     pub recording: Recording,
     pub sounds: Sounds,
@@ -89,7 +92,7 @@ pub struct Profiles(pub BTreeMap<String, Profile>);
 impl Default for Profiles {
     fn default() -> Self {
         Self(
-            ["default", "prompt", "computer"]
+            ["default", "prompt"]
                 .into_iter()
                 .map(|name| (name.to_owned(), Profile::default()))
                 .collect(),
@@ -103,9 +106,9 @@ pub struct Profile {
     pub description: String,
     pub model: String,
     pub prompt: String,
-    /// Gives the profile the computer-control tools. Defaults to true only
-    /// for the built-in "computer" profile.
-    pub tools: Option<bool>,
+    /// Gave the profile the computer agent's tools; ignored for now.
+    #[serde(rename = "tools")]
+    removed_tools: IgnoredAny,
 }
 
 impl Default for Profile {
@@ -114,29 +117,7 @@ impl Default for Profile {
             description: String::new(),
             model: "glm-5.3-flash".to_owned(),
             prompt: String::new(),
-            tools: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Computer {
-    pub max_steps: usize,
-    pub command_timeout_secs: u64,
-    pub allow_privileged: bool,
-    pub screenshot_max_size: u32,
-    pub notify: bool,
-}
-
-impl Default for Computer {
-    fn default() -> Self {
-        Self {
-            max_steps: 30,
-            command_timeout_secs: 60,
-            allow_privileged: false,
-            screenshot_max_size: 1280,
-            notify: true,
+            removed_tools: IgnoredAny,
         }
     }
 }
@@ -291,8 +272,13 @@ impl Config {
     pub fn read(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("could not read {}", path.display()))?;
-        let config: Self =
+        let mut config: Self =
             toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))?;
+        // The built-in computer agent profile, removed for now.
+        config
+            .profiles
+            .0
+            .retain(|name, profile| name != "computer" || !profile.prompt.trim().is_empty());
         config.validate()?;
         Ok(config)
     }
@@ -352,20 +338,10 @@ impl Config {
             set(table, "model", &profile.model);
             set(table, "description", &profile.description);
             set(table, "prompt", &profile.prompt);
-            match profile.tools {
-                Some(tools) => set(table, "tools", tools),
-                None => drop(table.remove("tools")),
-            }
+            table.remove("tools");
         }
+        root.remove("computer");
 
-        let computer = section(root, "computer");
-        set(computer, "max_steps", self.computer.max_steps as i64);
-        let timeout = self.computer.command_timeout_secs as i64;
-        set(computer, "command_timeout_secs", timeout);
-        set(computer, "allow_privileged", self.computer.allow_privileged);
-        let size = i64::from(self.computer.screenshot_max_size);
-        set(computer, "screenshot_max_size", size);
-        set(computer, "notify", self.computer.notify);
         let history = section(root, "history");
         set(history, "enabled", self.history.enabled);
         set(history, "entries", self.history.entries as i64);
@@ -394,7 +370,7 @@ impl Config {
         Ok(key)
     }
 
-    /// Memory and history live here: ~/.local/share/hydra-stt by default.
+    /// History lives here: ~/.local/share/hydra-stt by default.
     pub fn data_dir(&self) -> Result<PathBuf> {
         if cfg!(debug_assertions) {
             return Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data"));
@@ -504,6 +480,24 @@ mod tests {
     }
 
     #[test]
+    fn files_with_the_removed_agent_still_load() {
+        let directory = env::temp_dir().join(format!("hydra-stt-config-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("agent.toml");
+        let old = format!(
+            "{TEMPLATE}\n[profiles.computer]\nprompt = \"\"\ntools = true\n\n\
+             [computer]\nmax_steps = 30\n"
+        );
+        fs::write(&path, old).unwrap();
+        let config = Config::read(&path).unwrap();
+        assert!(!config.profiles.0.contains_key("computer"));
+        config.save(&path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(!text.contains("computer") && !text.contains("tools"));
+    }
+
+    #[test]
     fn saving_round_trips_and_keeps_comments() {
         let mut config: Config = toml::from_str(TEMPLATE).unwrap();
         config.groq.api_key = "gsk_test".to_owned();
@@ -516,7 +510,6 @@ mod tests {
             Profile {
                 description: "An email.".to_owned(),
                 prompt: "Line one.\nLine 'two'.\n".to_owned(),
-                tools: Some(false),
                 ..Profile::default()
             },
         );

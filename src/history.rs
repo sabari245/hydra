@@ -1,6 +1,6 @@
-//! Per-profile history: what each profile was given, what it produced, how
-//! the router decided, and what an agent did, kept as private JSON lines and
-//! shown to the profile on later requests.
+//! Per-profile history: what each profile was given, what it produced, and
+//! how the router decided, kept as private JSON lines and shown to the
+//! profile on later requests.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,9 +25,6 @@ pub struct HistoryEntry {
     /// The router's choice probabilities, when routing happened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<BTreeMap<String, f64>>,
-    /// Tool calls made by an agent profile.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actions: Vec<String>,
 }
 
 impl HistoryEntry {
@@ -40,7 +37,6 @@ impl HistoryEntry {
             input: input.to_owned(),
             output: output.to_owned(),
             route: None,
-            actions: Vec::new(),
         }
     }
 }
@@ -118,12 +114,6 @@ impl History {
                 snippet(&entry.input),
                 snippet(&entry.output)
             ));
-            if !entry.actions.is_empty() {
-                prompt.push_str(&format!(
-                    "\n    actions: {}",
-                    snippet(&entry.actions.join("; "))
-                ));
-            }
         }
         prompt
     }
@@ -161,14 +151,13 @@ mod tests {
         let history = History::open(&directory).unwrap();
 
         for index in 0..3 {
-            let mut entry = HistoryEntry::new(&format!("in {index}"), &format!("out {index}"));
-            entry.actions.push(format!("bash echo {index}"));
-            history.record("computer", &entry).unwrap();
+            let entry = HistoryEntry::new(&format!("in {index}"), &format!("out {index}"));
+            history.record("prompt", &entry).unwrap();
         }
-        let recent = history.recent("computer", 2);
+        let recent = history.recent("prompt", 2);
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[1].output, "out 2");
-        assert!(history.prompt("computer", 2).contains("bash echo 2"));
+        assert!(history.prompt("prompt", 2).contains("in 2"));
         assert!(history.prompt("default", 2).is_empty());
 
         fs::remove_dir_all(directory).unwrap();

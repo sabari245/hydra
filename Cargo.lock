@@ -1018,10 +1018,7 @@ name = "hydra-stt"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "eframe",
- "image",
- "libwayshot",
  "nix",
  "reqwest",
  "serde",
@@ -1029,9 +1026,6 @@ dependencies = [
  "tokio",
  "toml",
  "toml_edit",
- "wayland-client",
- "wayland-protocols-wlr",
- "wayland-sys",
 ]
 
 [[package]]
@@ -1210,8 +1204,6 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
- "zune-core",
- "zune-jpeg",
 ]
 
 [[package]]
@@ -1374,23 +1366,6 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.9.4",
-]
-
-[[package]]
-name = "libwayshot"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2091a51ba887965be06c011f7d5b90f3c706791892359f8af5aa0a81a15a310e"
-dependencies = [
- "image",
- "memmap2",
- "rustix 1.1.5",
- "thiserror 2.0.21",
- "tracing",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-wlr",
 ]
 
 [[package]]
@@ -2948,19 +2923,7 @@ checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "log",
  "pin-project-lite",
- "tracing-attributes",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-attributes"
-version = "0.1.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]

@@ -53,26 +53,6 @@ pub fn type_text(text: &str, press_enter: bool) -> Result<()> {
     Ok(())
 }
 
-/// Types text for the computer agent. As in Anthropic's reference computer-use
-/// tool, line breaks press Return and tabs press Tab, so forms can be filled
-/// field by field.
-pub fn type_keys(text: &str) -> Result<()> {
-    for piece in text.split_inclusive(['\n', '\t']) {
-        let (line, key) = match piece.chars().last() {
-            Some('\n') => (&piece[..piece.len() - 1], Some("Return")),
-            Some('\t') => (&piece[..piece.len() - 1], Some("Tab")),
-            _ => (piece, None),
-        };
-        for chunk in wtype_chunks(line.trim_end_matches('\r')) {
-            wtype(&["--", chunk], "text")?;
-        }
-        if let Some(key) = key {
-            wtype(&["-k", key], key)?;
-        }
-    }
-    Ok(())
-}
-
 /// wtype sends the Nth distinct character of a call as evdev keycode N, so the
 /// 29th lands on Left Ctrl (29) and the 42nd on Left Shift (42), and those
 /// characters are swallowed as modifiers. Each call gets a fresh keymap, so
@@ -99,7 +79,7 @@ fn wtype_chunks(text: &str) -> Vec<&str> {
     chunks
 }
 
-pub fn wtype(args: &[&str], what: &str) -> Result<()> {
+fn wtype(args: &[&str], what: &str) -> Result<()> {
     let status = Command::new("wtype")
         .args(args)
         .status()

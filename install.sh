@@ -114,15 +114,15 @@ case ":$PATH:" in
 esac
 
 missing=""
-for tool in arecord paplay wtype playerctl wl-copy notify-send; do
+for tool in arecord paplay wtype playerctl; do
     has "$tool" || missing="$missing $tool"
 done
 [ -n "${WAYLAND_DISPLAY:-}" ] || say "warning: Hydra STT needs a Wayland session"
 if [ -n "$missing" ]; then
     say "missing runtime tools:$missing"
-    say "  Debian/Ubuntu: sudo apt install alsa-utils pulseaudio-utils wtype playerctl wl-clipboard libnotify-bin"
-    say "  Fedora:        sudo dnf install alsa-utils pulseaudio-utils wtype playerctl wl-clipboard libnotify"
-    say "  Arch:          sudo pacman -S alsa-utils libpulse wtype playerctl wl-clipboard libnotify"
+    say "  Debian/Ubuntu: sudo apt install alsa-utils pulseaudio-utils wtype playerctl"
+    say "  Fedora:        sudo dnf install alsa-utils pulseaudio-utils wtype playerctl"
+    say "  Arch:          sudo pacman -S alsa-utils libpulse wtype playerctl"
 fi
 
 cat <<EOF
