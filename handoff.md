@@ -45,7 +45,7 @@ libwayshot, mouse via wlr-virtual-pointer, long-term memory) was removed on
 `computer-agent`. Config files from that time still load: `[computer]` and
 `tools` keys are ignored, a `[profiles.computer]` with an empty prompt is
 dropped, and saving from the window removes them. The window shows it as
-"Computer agent (upcoming)".
+"Computer agent" with a "Soon" badge under Upcoming in the sidebar.
 
 ## Files
 
@@ -54,7 +54,9 @@ dropped, and saving from the window removes them. The window shows it as
   through `toml_edit` so comments survive
 - `src/settings.rs` — the window (`hydra-stt` with no arguments), egui via
   eframe (glow, Wayland only): Home page with daemon status/start/stop/
-  restart/autostart, then pages editing every config option
+  restart/autostart, then pages editing every config option. Own theme
+  (`theme` module: dark/light palettes, Manrope from `assets/fonts/`, OFL),
+  custom toggle switches, and an animated voice waveform on Home
 - `src/service.rs` — starting the daemon detached (`--daemon`), stopping it
   over the control socket, and the systemd user unit for start at login
 - `assets/hydra-stt.desktop` — menu entry; installed by the .deb and by

@@ -49,7 +49,7 @@ window is where you control Hydra:
   to bind in your compositor.
 - **API keys** holds your Groq and IsoQuant keys, and tests the Groq key.
 - The other pages cover every option: speech model, microphone, sounds,
-  profiles, history, and output.
+  profiles, history, typing, and logs.
 
 The dictation itself runs as a background process (`hydra-stt --daemon`),
 so closing the window does not stop it. Start at login uses a systemd user
@@ -61,7 +61,7 @@ compositor's startup commands.
 
 The window edits `~/.config/hydra-stt/config.toml` in place and keeps the
 file's comments. The daemon reads the file when it starts, so after saving,
-press **Restart Hydra to apply**.
+press **Restart Hydra** in the bar that appears.
 
 You can also edit the file by hand. It is created on first run with every
 option commented (see [`config.example.toml`](config.example.toml)).
@@ -71,7 +71,7 @@ option commented (see [`config.example.toml`](config.example.toml)).
 | `[groq]`      | `api_key`, `model`                                             |
 | `[isoquant]`  | `enabled`, `api_key`, `api_url`, `timeout_secs`                |
 | `[router]`    | `model`, `instructions`, `min_confidence`                      |
-| `[profiles.NAME]` | `description`, `model`, `prompt`, `tools`                  |
+| `[profiles.NAME]` | `description`, `model`, `prompt`                           |
 | `[history]`   | `enabled`, `entries`                                           |
 | `[recording]` | `device` (ALSA device for `arecord -D`; see `arecord -L`)      |
 | `[sounds]`    | `enabled`, `volume` (0-100), `press`, `release` (custom WAVs)  |
@@ -211,4 +211,5 @@ checksums, and attaches them and `install.sh` to a GitHub release.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The window uses the Manrope typeface
+(`assets/fonts/`), under the [SIL Open Font License](assets/fonts/OFL.txt).
