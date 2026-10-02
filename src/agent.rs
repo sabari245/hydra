@@ -19,6 +19,7 @@ use std::{
 
 const KEEP_SCREENSHOTS: usize = 2;
 const MAX_ACTION: usize = 200;
+const NOTIFY_MS: u32 = 3000;
 
 pub struct Settings<'a> {
     pub api_key: &'a str,
@@ -149,7 +150,14 @@ fn prune_screenshots(messages: &mut [Value]) {
 
 pub fn notify(summary: &str, body: &str, replace: Option<&str>) -> Option<String> {
     let mut command = Command::new("notify-send");
-    command.args(["--app-name=Hydra STT", "--print-id"]);
+    // Short-lived and kept out of the notification history.
+    command.args([
+        "--app-name=Hydra STT",
+        "--print-id",
+        "--urgency=low",
+        "--hint=int:transient:1",
+    ]);
+    command.arg(format!("--expire-time={}", NOTIFY_MS));
     if let Some(id) = replace {
         command.arg(format!("--replace-id={id}"));
     }

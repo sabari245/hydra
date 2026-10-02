@@ -26,6 +26,22 @@ use std::{
 };
 
 const KEY_REPEAT_MAX: u64 = 100;
+/// Actions followed by a fresh screenshot, so the model can check the result.
+const VISUAL_ACTIONS: &[&str] = &[
+    "left_click",
+    "double_click",
+    "triple_click",
+    "right_click",
+    "middle_click",
+    "mouse_move",
+    "left_click_drag",
+    "scroll",
+    "type",
+    "key",
+];
+/// Time for animations, scrolling, and page updates to settle before the
+/// follow-up screenshot.
+const SETTLE: Duration = Duration::from_millis(500);
 
 const ACTIONS: &[&str] = &[
     "screenshot",
@@ -50,7 +66,7 @@ pub fn definition() -> Value {
         "type": "function",
         "function": {
             "name": "computer",
-            "description": "Control the user's Linux desktop: take screenshots of any monitor, move and click the mouse, type, press keys, scroll, and read or write the clipboard. Coordinates are pixels in the most recent screenshot, origin top-left.",
+            "description": "Control the user's Linux desktop: take screenshots of any monitor, move and click the mouse, type, press keys, scroll, and read or write the clipboard. Coordinates are pixels in the most recent screenshot, origin top-left. Clicks, moves, drags, scrolls, typing, and key presses return a new screenshot taken just after the action.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -241,7 +257,43 @@ impl Computer {
         tokio::task::spawn_blocking(move || pointer::run(&monitor, &actions)).await?
     }
 
+    /// Runs an action. Visual actions also return a screenshot of the same
+    /// monitor taken after the action, which becomes the new coordinate space.
     pub async fn execute(&mut self, arguments: &Value) -> Result<ToolResult> {
+        let action = super::string(arguments, "action")?;
+        let result = self.act(arguments).await?;
+        let ToolResult::Text(done) = result else {
+            return Ok(result);
+        };
+        if !VISUAL_ACTIONS.contains(&action) {
+            return Ok(ToolResult::Text(done));
+        }
+        tokio::time::sleep(SETTLE).await;
+        let monitor = self.view.as_ref().map(|view| view.monitor.name.clone());
+        let max_size = self.max_size;
+        let shot =
+            tokio::task::spawn_blocking(move || screenshot::capture(monitor.as_deref(), max_size))
+                .await?;
+        match shot {
+            Ok(shot) => {
+                self.view = Some(View {
+                    monitor: shot.monitor.clone(),
+                    width: shot.width,
+                    height: shot.height,
+                });
+                let description = format!(
+                    "{done}. Screenshot after the action, check that it did what you intended: {}",
+                    shot.describe()
+                );
+                Ok(ToolResult::Image(description, shot))
+            }
+            Err(error) => Ok(ToolResult::Text(format!(
+                "{done}. Could not take the follow-up screenshot: {error:#}"
+            ))),
+        }
+    }
+
+    async fn act(&mut self, arguments: &Value) -> Result<ToolResult> {
         let action = super::string(arguments, "action")?;
         let text = || super::string(arguments, "text");
         let point = coordinate(arguments, "coordinate")?;
