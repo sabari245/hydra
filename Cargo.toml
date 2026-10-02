@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 libwayshot = { version = "0.9", default-features = false }
 nix = { version = "0.29", features = ["signal"] }
@@ -20,6 +21,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.9"
+toml_edit = "0.25"
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-sys = { version = "0.31", features = ["dlopen"] }
@@ -34,13 +36,14 @@ maintainer = "Vorden <sabari2004@hotmail.com>"
 section = "sound"
 priority = "optional"
 depends = "libc6 (>= 2.31), libwayland-client0, alsa-utils, pulseaudio-utils, wtype"
-recommends = "playerctl, wl-clipboard, libnotify-bin"
+recommends = "playerctl, wl-clipboard, libnotify-bin, libegl1, libxkbcommon0"
 extended-description = """\
 Hydra STT records speech on a hotkey, transcribes it with Groq Whisper, \
 optionally cleans the transcript, and types it into the focused window. \
-Run `hydra-stt` once to create ~/.config/hydra-stt/config.toml."""
+Open Hydra STT from your applications menu to add your API keys and start it."""
 assets = [
     ["target/release/hydra-stt", "usr/bin/", "755"],
+    ["assets/hydra-stt.desktop", "usr/share/applications/", "644"],
     ["README.md", "usr/share/doc/hydra-stt/", "644"],
     ["config.example.toml", "usr/share/doc/hydra-stt/", "644"],
 ]

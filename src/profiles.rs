@@ -158,6 +158,73 @@ struct ChoiceAnswer {
     probabilities: BTreeMap<String, f64>,
 }
 
+/// The built-in prompt and description of a built-in profile.
+pub fn builtin(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        DEFAULT => Some((DEFAULT_PROMPT, DEFAULT_DESCRIPTION)),
+        "prompt" => Some((PROMPT_PROMPT, PROMPT_DESCRIPTION)),
+        "computer" => Some((COMPUTER_PROMPT, COMPUTER_DESCRIPTION)),
+        _ => None,
+    }
+}
+
+/// Fills in built-in prompts and descriptions and checks the profiles. The
+/// default profile is first.
+fn resolve(config: &config::Config, path: &Path) -> Result<Vec<Profile>> {
+    let suffix = match config.output.newlines {
+        config::Newlines::Space => SINGLE_PARAGRAPH,
+        config::Newlines::ShiftEnter => PARAGRAPHS,
+    };
+    let mut profiles = Vec::new();
+    for (name, profile) in &config.profiles.0 {
+        let tools = profile.tools.unwrap_or(name == "computer");
+        let (builtin_prompt, builtin_description) = match builtin(name) {
+            Some((prompt, description)) => (Some(prompt), description),
+            None => (None, ""),
+        };
+        let prompt = match (profile.prompt.trim(), builtin_prompt) {
+            ("", Some(builtin)) if tools => builtin.to_owned(),
+            ("", Some(builtin)) => format!("{builtin}\n{suffix}"),
+            ("", None) => bail!("profiles.{name}.prompt is required"),
+            (custom, _) => custom.to_owned(),
+        };
+        let description = match profile.description.trim() {
+            "" => builtin_description.to_owned(),
+            custom => custom.to_owned(),
+        };
+        profiles.push(Profile {
+            name: name.clone(),
+            description,
+            model: profile.model.clone(),
+            prompt,
+            tools,
+        });
+    }
+    let Some(index) = profiles.iter().position(|profile| profile.name == DEFAULT) else {
+        bail!("profiles.{DEFAULT} is required in {}", path.display());
+    };
+    profiles.swap(0, index);
+    if profiles[0].tools {
+        bail!("profiles.{DEFAULT} cannot use tools; it is the fallback for dictation");
+    }
+    if profiles.len() > 1
+        && let Some(profile) = profiles
+            .iter()
+            .find(|profile| profile.description.is_empty())
+    {
+        bail!(
+            "profiles.{}.description is required when more than one profile is set",
+            profile.name
+        );
+    }
+    Ok(profiles)
+}
+
+/// Checks the profiles the way the daemon will when it starts.
+pub fn check(config: &config::Config, path: &Path) -> Result<()> {
+    resolve(config, path).map(drop)
+}
+
 impl Pipeline {
     /// Returns `None` when IsoQuant post-processing is disabled.
     pub fn from_config(config: &config::Config, path: &Path) -> Result<Option<Self>> {
@@ -173,54 +240,7 @@ impl Pipeline {
                 path.display()
             );
         }
-        let suffix = match config.output.newlines {
-            config::Newlines::Space => SINGLE_PARAGRAPH,
-            config::Newlines::ShiftEnter => PARAGRAPHS,
-        };
-        let mut profiles = Vec::new();
-        for (name, profile) in &config.profiles.0 {
-            let tools = profile.tools.unwrap_or(name == "computer");
-            let (builtin_prompt, builtin_description) = match name.as_str() {
-                DEFAULT => (Some(DEFAULT_PROMPT), DEFAULT_DESCRIPTION),
-                "prompt" => (Some(PROMPT_PROMPT), PROMPT_DESCRIPTION),
-                "computer" => (Some(COMPUTER_PROMPT), COMPUTER_DESCRIPTION),
-                _ => (None, ""),
-            };
-            let prompt = match (profile.prompt.trim(), builtin_prompt) {
-                ("", Some(builtin)) if tools => builtin.to_owned(),
-                ("", Some(builtin)) => format!("{builtin}\n{suffix}"),
-                ("", None) => bail!("profiles.{name}.prompt is required"),
-                (custom, _) => custom.to_owned(),
-            };
-            let description = match profile.description.trim() {
-                "" => builtin_description.to_owned(),
-                custom => custom.to_owned(),
-            };
-            profiles.push(Profile {
-                name: name.clone(),
-                description,
-                model: profile.model.clone(),
-                prompt,
-                tools,
-            });
-        }
-        let Some(index) = profiles.iter().position(|profile| profile.name == DEFAULT) else {
-            bail!("profiles.{DEFAULT} is required in {}", path.display());
-        };
-        profiles.swap(0, index);
-        if profiles[0].tools {
-            bail!("profiles.{DEFAULT} cannot use tools; it is the fallback for dictation");
-        }
-        if profiles.len() > 1
-            && let Some(profile) = profiles
-                .iter()
-                .find(|profile| profile.description.is_empty())
-        {
-            bail!(
-                "profiles.{}.description is required when more than one profile is set",
-                profile.name
-            );
-        }
+        let profiles = resolve(config, path)?;
         let data_dir = config.data_dir()?;
         let history = if config.history.enabled && config.history.entries > 0 {
             History::open(&data_dir)

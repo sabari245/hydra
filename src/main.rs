@@ -13,6 +13,8 @@ mod media;
 mod pointer;
 mod profiles;
 mod screenshot;
+mod service;
+mod settings;
 mod tools;
 mod typing;
 
@@ -43,8 +45,11 @@ const USAGE: &str = "\
 Usage: hydra-stt [COMMAND]
 
 Commands:
-  (none)         Run the dictation daemon
+  (none)         Open the Hydra STT window: settings, and starting or
+                 stopping Hydra in the background
+  --daemon       Run the dictation daemon (what runs in the background)
   --toggle       Start or stop recording in the running daemon
+  --stop         Stop the running daemon
   --process [P]  Process a transcript from stdin, routed to a profile or
                  always through profile P, and print the text to type or
                  the agent's summary
@@ -85,8 +90,10 @@ struct ModelInfo {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mode = match env::args().nth(1).as_deref() {
-        None => Mode::Daemon,
+        None | Some("--settings") => return settings::run(),
+        Some("--daemon") => Mode::Daemon,
         Some("--toggle") => return control::toggle(),
+        Some("--stop") => return control::quit(),
         Some("--process" | "--cleanup") => Mode::Process(env::args().nth(2)),
         Some("--models") => Mode::Models,
         Some("--config-path") => {
@@ -107,7 +114,7 @@ async fn main() -> Result<()> {
     let config_path = config::path()?;
     if config::ensure_exists(&config_path)? {
         eprintln!(
-            "Created {}; add your API keys there.",
+            "Created {}; add your API keys there or in the Hydra STT window.",
             config_path.display()
         );
     }
@@ -187,7 +194,10 @@ async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Re
     let mut interrupt = tokio_signal::signal(SignalKind::interrupt())?;
     loop {
         tokio::select! {
-            toggle = toggle_rx.recv() => if toggle.is_none() { break },
+            command = toggle_rx.recv() => match command {
+                Some(control::Command::Toggle) => {}
+                Some(control::Command::Quit) | None => break,
+            },
             _ = terminate.recv() => break,
             _ = interrupt.recv() => break,
         }
@@ -427,6 +437,15 @@ async fn transcribe(
 }
 
 async fn list_models(api_key: &str) -> Result<()> {
+    println!("Speech models available on this account:");
+    for model in speech_models(api_key).await? {
+        println!("- {model}");
+    }
+    Ok(())
+}
+
+/// The Whisper models available to this Groq API key.
+async fn speech_models(api_key: &str) -> Result<Vec<String>> {
     let response = reqwest::Client::new()
         .get(format!("{GROQ_API_URL}/models"))
         .bearer_auth(api_key)
@@ -438,11 +457,11 @@ async fn list_models(api_key: &str) -> Result<()> {
         .json::<ModelsResponse>()
         .await?
         .data;
-    println!("Speech models available on this account:");
-    for model in models.iter().filter(|model| model.id.contains("whisper")) {
-        println!("- {}", model.id);
-    }
-    Ok(())
+    Ok(models
+        .into_iter()
+        .map(|model| model.id)
+        .filter(|id| id.contains("whisper"))
+        .collect())
 }
 
 async fn check_groq_response(response: reqwest::Response) -> Result<reqwest::Response> {

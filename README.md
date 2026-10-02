@@ -41,13 +41,35 @@ sudo apt install ./hydra-stt_amd64.deb
 - For the computer agent: a wlroots-style compositor with screencopy and
   virtual pointer support (Niri, Sway, Hyprland), `wl-clipboard`, and
   `notify-send` (optional)
+- For the window: EGL and xkbcommon (`libegl1`, `libxkbcommon0`)
 - A Groq API key, and an IsoQuant API key unless `[isoquant] enabled = false`
+
+## Set up
+
+Open **Hydra STT** from your applications menu, or run `hydra-stt`. The
+window is where you control Hydra:
+
+- **Home** shows whether Hydra is running in the background, with Start,
+  Stop and Restart, a switch to start it at login, and the shortcut command
+  to bind in your compositor.
+- **API keys** holds your Groq and IsoQuant keys, and tests the Groq key.
+- The other pages cover every option: speech model, microphone, sounds,
+  profiles, the computer agent, and output.
+
+The dictation itself runs as a background process (`hydra-stt --daemon`),
+so closing the window does not stop it. Start at login uses a systemd user
+service (`~/.config/systemd/user/hydra-stt.service`, started with your
+graphical session). Without systemd, add `hydra-stt --daemon` to your
+compositor's startup commands.
 
 ## Configure
 
-Run `hydra-stt` once. It creates `~/.config/hydra-stt/config.toml` with
-every option commented (see [`config.example.toml`](config.example.toml)),
-then exits asking for your API keys.
+The window edits `~/.config/hydra-stt/config.toml` in place and keeps the
+file's comments. The daemon reads the file when it starts, so after saving,
+press **Restart Hydra to apply**.
+
+You can also edit the file by hand. It is created on first run with every
+option commented (see [`config.example.toml`](config.example.toml)).
 
 | Section       | Options                                                        |
 | ------------- | -------------------------------------------------------------- |
@@ -70,23 +92,22 @@ file, leave `api_key` empty and export `GROQ_API_KEY` and `ISO_QUANT_API_KEY`
 instead; environment variables always override the file. `GROQ_MODEL` and
 `HYDRA_STT_CONFIG` (alternate config path) are also honored.
 
-## Run
+## Use
 
-```sh
-hydra-stt
-```
-
-A high click means recording started; a low click means it stopped. Media
+Press your shortcut to start recording and again to stop. A high click means recording started; a low click means it stopped. Media
 players that were playing are paused while recording and resumed afterwards.
 If processing fails, the raw transcript is typed instead. Line breaks are
 joined into one line by default, because a typed newline is a Return key press
 that would submit partial text; `newlines = "shift_enter"` keeps them. Empty output is
-not typed and does not send Enter. SIGINT or SIGTERM stop the daemon cleanly.
+not typed and does not send Enter.
 
-Other commands:
+Commands:
 
 ```sh
+hydra-stt                 # open the window
+hydra-stt --daemon        # run dictation in the foreground (what runs in the background)
 hydra-stt --toggle        # start/stop recording in the running daemon
+hydra-stt --stop          # stop the running daemon
 hydra-stt --models        # list Groq speech models on your account
 hydra-stt --config-path   # print the config file location
 printf '%s' 'Um, I I need to call, uh, call Sam.' | hydra-stt --process
@@ -191,9 +212,13 @@ tail -f ~/.local/state/hydra-stt/hydra.log
 ## Development
 
 ```sh
-cargo run                 # debug build, logs to ./logs
+cargo run                 # the window, from a debug build
+cargo run -- --daemon     # the daemon in the foreground, logs to ./logs
 cargo run -- --process < transcript.txt
 ```
+
+Only one daemon can run at a time, so stop the installed one first
+(`hydra-stt --stop`) to try a debug build.
 
 The built-in profile prompts are in `src/profiles.rs`. The default prompt follows the conservative approach
 of [Fluent](https://github.com/inhaq/fluent) and this

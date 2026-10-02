@@ -6,7 +6,7 @@
 # Options (also settable through environment variables):
 #   --version vX.Y.Z   Install a specific release   (HYDRA_STT_VERSION, default: latest)
 #   --prefix DIR       Install to DIR/bin           (HYDRA_STT_PREFIX, default: ~/.local)
-#   --uninstall        Remove the installed binary
+#   --uninstall        Remove the installed binary, menu entry and login service
 # HYDRA_STT_BASE_URL overrides where release files are downloaded from.
 
 set -eu
@@ -31,9 +31,16 @@ while [ $# -gt 0 ]; do
 done
 
 BIN_DIR="$PREFIX/bin"
+APPS_DIR="$PREFIX/share/applications"
+UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/hydra-stt.service"
 
 if [ "$UNINSTALL" -eq 1 ]; then
-    rm -f "$BIN_DIR/hydra-stt"
+    [ -x "$BIN_DIR/hydra-stt" ] && "$BIN_DIR/hydra-stt" --stop 2>/dev/null || true
+    if [ -f "$UNIT" ]; then
+        systemctl --user disable hydra-stt.service 2>/dev/null || true
+        rm -f "$UNIT"
+    fi
+    rm -f "$BIN_DIR/hydra-stt" "$APPS_DIR/hydra-stt.desktop"
     say "removed $BIN_DIR/hydra-stt"
     say "configuration (~/.config/hydra-stt) and logs (~/.local/state/hydra-stt) were kept"
     exit 0
@@ -92,6 +99,15 @@ mkdir -p "$BIN_DIR"
 install -m 755 "$TMP/hydra-stt-$TARGET/hydra-stt" "$BIN_DIR/hydra-stt"
 say "installed $("$BIN_DIR/hydra-stt" --version) to $BIN_DIR/hydra-stt"
 
+# Older releases do not ship the menu entry.
+DESKTOP="$TMP/hydra-stt-$TARGET/hydra-stt.desktop"
+if [ -f "$DESKTOP" ]; then
+    mkdir -p "$APPS_DIR"
+    sed "s|^Exec=hydra-stt\$|Exec=$BIN_DIR/hydra-stt|" "$DESKTOP" > "$APPS_DIR/hydra-stt.desktop"
+    chmod 644 "$APPS_DIR/hydra-stt.desktop"
+    say "added Hydra STT to your applications menu"
+fi
+
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) say "note: $BIN_DIR is not on your PATH; add it to your shell profile" ;;
@@ -112,8 +128,7 @@ fi
 cat <<EOF
 
 Next steps:
-  1. Run 'hydra-stt' once to create ~/.config/hydra-stt/config.toml.
-  2. Add your Groq (and optionally IsoQuant) API keys to that file.
+  1. Open Hydra STT from your applications menu (or run 'hydra-stt').
+  2. Add your Groq (and optionally IsoQuant) API keys, then press Start.
   3. Bind '$BIN_DIR/hydra-stt --toggle' to a key in your Wayland compositor.
-  4. Start the daemon: hydra-stt
 EOF

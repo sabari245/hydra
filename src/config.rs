@@ -11,7 +11,7 @@ use std::{
 pub const APP_NAME: &str = "hydra-stt";
 const TEMPLATE: &str = include_str!("../config.example.toml");
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub groq: Groq,
@@ -27,7 +27,7 @@ pub struct Config {
     pub logging: Logging,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Groq {
     pub api_key: String,
@@ -43,7 +43,7 @@ impl Default for Groq {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IsoQuant {
     pub enabled: bool,
@@ -63,7 +63,7 @@ impl Default for IsoQuant {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Router {
     pub model: String,
@@ -82,7 +82,7 @@ impl Default for Router {
 }
 
 /// Profiles by name. Defining any `[profiles.*]` table replaces the built-in set.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(transparent)]
 pub struct Profiles(pub BTreeMap<String, Profile>);
 
@@ -97,7 +97,7 @@ impl Default for Profiles {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
     pub description: String,
@@ -119,7 +119,7 @@ impl Default for Profile {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Computer {
     pub max_steps: usize,
@@ -141,7 +141,7 @@ impl Default for Computer {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct History {
     pub enabled: bool,
@@ -157,13 +157,13 @@ impl Default for History {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Recording {
     pub device: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Sounds {
     pub enabled: bool,
@@ -183,7 +183,7 @@ impl Default for Sounds {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Media {
     pub pause_while_recording: bool,
@@ -197,7 +197,7 @@ impl Default for Media {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Output {
     pub press_enter: bool,
@@ -214,7 +214,16 @@ pub enum Newlines {
     ShiftEnter,
 }
 
-#[derive(Debug, Default, Deserialize)]
+impl Newlines {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Space => "space",
+            Self::ShiftEnter => "shift_enter",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Logging {
     pub dir: Option<PathBuf>,
@@ -263,17 +272,9 @@ pub fn ensure_exists(path: &Path) -> Result<bool> {
 }
 
 impl Config {
+    /// Reads the file and applies environment overrides.
     pub fn load(path: &Path) -> Result<Self> {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("could not read {}", path.display()))?;
-        let mut config: Self =
-            toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))?;
-        if config.sounds.volume > 100 {
-            bail!("sounds.volume must be between 0 and 100");
-        }
-        if !(0.0..=1.0).contains(&config.router.min_confidence) {
-            bail!("router.min_confidence must be between 0 and 1");
-        }
+        let mut config = Self::read(path)?;
         if let Ok(key) = env::var("GROQ_API_KEY") {
             config.groq.api_key = key;
         }
@@ -284,6 +285,102 @@ impl Config {
             config.isoquant.api_key = key;
         }
         Ok(config)
+    }
+
+    /// Reads the file as written, without environment overrides.
+    pub fn read(path: &Path) -> Result<Self> {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("could not read {}", path.display()))?;
+        let config: Self =
+            toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.sounds.volume > 100 {
+            bail!("sounds.volume must be between 0 and 100");
+        }
+        if !(0.0..=1.0).contains(&self.router.min_confidence) {
+            bail!("router.min_confidence must be between 0 and 1");
+        }
+        Ok(())
+    }
+
+    /// Writes these values into the file, keeping its comments and layout.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        let text = fs::read_to_string(path).unwrap_or_default();
+        let mut document: toml_edit::DocumentMut = text
+            .parse()
+            .with_context(|| format!("invalid config {}", path.display()))?;
+        self.write_to(&mut document);
+        let temporary = path.with_extension("toml.tmp");
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)
+            .and_then(|mut file| file.write_all(document.to_string().as_bytes()))
+            .with_context(|| format!("could not write {}", temporary.display()))?;
+        fs::rename(&temporary, path)
+            .with_context(|| format!("could not replace {}", path.display()))?;
+        Ok(())
+    }
+
+    fn write_to(&self, document: &mut toml_edit::DocumentMut) {
+        let root = document.as_table_mut();
+        let groq = section(root, "groq");
+        set(groq, "api_key", &self.groq.api_key);
+        set(groq, "model", &self.groq.model);
+        let isoquant = section(root, "isoquant");
+        set(isoquant, "enabled", self.isoquant.enabled);
+        set(isoquant, "api_key", &self.isoquant.api_key);
+        set(isoquant, "api_url", &self.isoquant.api_url);
+        set(isoquant, "timeout_secs", self.isoquant.timeout_secs as i64);
+        let router = section(root, "router");
+        set(router, "model", &self.router.model);
+        set(router, "instructions", &self.router.instructions);
+        set(router, "min_confidence", self.router.min_confidence);
+
+        let profiles = section(root, "profiles");
+        profiles.set_implicit(true);
+        profiles.retain(|name, _| self.profiles.0.contains_key(name));
+        for (name, profile) in &self.profiles.0 {
+            let table = section(profiles, name);
+            set(table, "model", &profile.model);
+            set(table, "description", &profile.description);
+            set(table, "prompt", &profile.prompt);
+            match profile.tools {
+                Some(tools) => set(table, "tools", tools),
+                None => drop(table.remove("tools")),
+            }
+        }
+
+        let computer = section(root, "computer");
+        set(computer, "max_steps", self.computer.max_steps as i64);
+        let timeout = self.computer.command_timeout_secs as i64;
+        set(computer, "command_timeout_secs", timeout);
+        set(computer, "allow_privileged", self.computer.allow_privileged);
+        let size = i64::from(self.computer.screenshot_max_size);
+        set(computer, "screenshot_max_size", size);
+        set(computer, "notify", self.computer.notify);
+        let history = section(root, "history");
+        set(history, "enabled", self.history.enabled);
+        set(history, "entries", self.history.entries as i64);
+        set(section(root, "recording"), "device", &self.recording.device);
+        let sounds = section(root, "sounds");
+        set(sounds, "enabled", self.sounds.enabled);
+        set(sounds, "volume", i64::from(self.sounds.volume));
+        set_path(sounds, "press", self.sounds.press.as_deref());
+        set_path(sounds, "release", self.sounds.release.as_deref());
+        let pause = self.media.pause_while_recording;
+        set(section(root, "media"), "pause_while_recording", pause);
+        let output = section(root, "output");
+        set(output, "press_enter", self.output.press_enter);
+        set(output, "newlines", self.output.newlines.as_str());
+        set_path(section(root, "logging"), "dir", self.logging.dir.as_deref());
     }
 
     pub fn groq_api_key(&self, path: &Path) -> Result<&str> {
@@ -316,9 +413,117 @@ impl Config {
     }
 }
 
+/// Returns the table at `key`, creating it (or replacing a non-table value).
+fn section<'a>(parent: &'a mut toml_edit::Table, key: &str) -> &'a mut toml_edit::Table {
+    let item = parent
+        .entry(key)
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+    if !item.is_table() {
+        *item = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    item.as_table_mut().expect("just made a table")
+}
+
+/// Sets a value, keeping the comment beside the old one. Unchanged values
+/// are left alone so their original formatting survives.
+fn set(table: &mut toml_edit::Table, key: &str, value: impl Into<toml_edit::Value>) {
+    let mut value = value.into();
+    if let toml_edit::Value::String(text) = &value
+        && text.value().contains('\n')
+    {
+        value = multiline(text.value());
+    }
+    match table.get_mut(key).and_then(toml_edit::Item::as_value_mut) {
+        Some(old) if same(old, &value) => {}
+        Some(old) => {
+            *value.decor_mut() = old.decor().clone();
+            *old = value;
+        }
+        None => drop(table.insert(key, toml_edit::Item::Value(value))),
+    }
+}
+
+fn same(a: &toml_edit::Value, b: &toml_edit::Value) -> bool {
+    use toml_edit::Value::{Boolean, Float, Integer, String};
+    match (a, b) {
+        (String(a), String(b)) => a.value() == b.value(),
+        (Integer(a), Integer(b)) => a.value() == b.value(),
+        (Float(a), Float(b)) => a.value() == b.value(),
+        (Boolean(a), Boolean(b)) => a.value() == b.value(),
+        _ => false,
+    }
+}
+
+/// A `'''literal'''` string when possible, so prompts stay readable in the file.
+fn multiline(text: &str) -> toml_edit::Value {
+    let literal_safe = !text.contains("'''")
+        && !text.ends_with('\'')
+        && text
+            .chars()
+            .all(|c| c == '\n' || c == '\t' || !c.is_control());
+    literal_safe
+        .then(|| format!("'''\n{text}'''").parse().ok())
+        .flatten()
+        .unwrap_or_else(|| text.into())
+}
+
+fn set_path(table: &mut toml_edit::Table, key: &str, path: Option<&Path>) {
+    match path {
+        Some(path) => set(table, key, path.to_string_lossy().as_ref()),
+        None => drop(table.remove(key)),
+    }
+}
+
 /// Returns true when the file can be read by users other than its owner.
 pub fn is_shared(path: &Path) -> bool {
     fs::metadata(path)
         .map(|metadata| metadata.permissions().mode() & 0o077 != 0)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(config: &Config) -> (String, Config) {
+        let directory = env::temp_dir().join(format!("hydra-stt-config-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("{:p}.toml", config));
+        fs::write(&path, TEMPLATE).unwrap();
+        config.save(&path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let read = Config::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        (text, read)
+    }
+
+    #[test]
+    fn saving_unchanged_values_keeps_the_file() {
+        let config: Config = toml::from_str(TEMPLATE).unwrap();
+        assert_eq!(saved(&config).0, TEMPLATE);
+    }
+
+    #[test]
+    fn saving_round_trips_and_keeps_comments() {
+        let mut config: Config = toml::from_str(TEMPLATE).unwrap();
+        config.groq.api_key = "gsk_test".to_owned();
+        config.sounds.volume = 40;
+        config.sounds.press = Some(PathBuf::from("/tmp/press.wav"));
+        config.output.newlines = Newlines::ShiftEnter;
+        config.profiles.0.remove("prompt");
+        config.profiles.0.insert(
+            "email".to_owned(),
+            Profile {
+                description: "An email.".to_owned(),
+                prompt: "Line one.\nLine 'two'.\n".to_owned(),
+                tools: Some(false),
+                ..Profile::default()
+            },
+        );
+        let (text, read) = saved(&config);
+        assert_eq!(read, config);
+        assert!(text.contains("# Speech-to-text. Required.\napi_key = \"gsk_test\""));
+        assert!(text.contains("prompt = '''\nLine one.\nLine 'two'.\n'''"));
+        assert!(!text.contains("[profiles.prompt]"));
+    }
 }

@@ -51,7 +51,8 @@ jobs:
         run: |
           name=hydra-stt-${{ matrix.target }}
           mkdir -p dist "$name"
-          cp target/${{ matrix.target }}/release/hydra-stt README.md LICENSE config.example.toml "$name/"
+          cp target/${{ matrix.target }}/release/hydra-stt README.md LICENSE config.example.toml \
+            assets/hydra-stt.desktop "$name/"
           tar -czf "dist/$name.tar.gz" "$name"
 
       - name: Package deb

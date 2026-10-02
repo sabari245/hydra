@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Hydra STT
+GenericName=Speech to Text
+Comment=Dictation and a desktop agent, controlled by voice
+Exec=hydra-stt
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=hydra;dictation;speech;voice;stt;transcribe;
+StartupWMClass=hydra-stt

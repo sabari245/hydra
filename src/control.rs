@@ -12,15 +12,37 @@ fn socket_path() -> Result<PathBuf> {
     Ok(PathBuf::from(directory).join(format!("{}.sock", crate::config::APP_NAME)))
 }
 
+/// A message to the running daemon.
+pub enum Command {
+    Toggle,
+    Quit,
+}
+
 pub fn toggle() -> Result<()> {
+    send(b"toggle")
+}
+
+pub fn quit() -> Result<()> {
+    send(b"quit")
+}
+
+fn send(message: &[u8]) -> Result<()> {
     let socket = UnixDatagram::unbound()?;
     socket
         .connect(socket_path()?)
-        .context("Hydra STT is not running; start the daemon first")?;
+        .context("Hydra STT is not running in the background")?;
     socket
-        .send(b"toggle")
-        .context("could not send toggle to Hydra STT")?;
+        .send(message)
+        .context("could not send a command to Hydra STT")?;
     Ok(())
+}
+
+/// Whether a daemon is listening on the control socket.
+pub fn is_running() -> bool {
+    let Ok(path) = socket_path() else {
+        return false;
+    };
+    UnixDatagram::unbound().is_ok_and(|socket| socket.connect(path).is_ok())
 }
 
 pub struct Listener {
@@ -32,14 +54,17 @@ impl Drop for Listener {
     }
 }
 
-pub fn start(tx: UnboundedSender<()>) -> Result<Listener> {
+pub fn start(tx: UnboundedSender<Command>) -> Result<Listener> {
     let path = socket_path()?;
     let socket = match UnixDatagram::bind(&path) {
         Ok(socket) => socket,
         Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
             let probe = UnixDatagram::unbound()?;
             match probe.connect(&path) {
-                Ok(()) => bail!("another Hydra STT daemon is already running"),
+                Ok(()) => bail!(
+                    "Hydra STT is already running in the background; \
+                     open the Hydra STT window or run `hydra-stt --stop` to stop it"
+                ),
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -61,18 +86,23 @@ pub fn start(tx: UnboundedSender<()>) -> Result<Listener> {
     thread::spawn(move || {
         let mut buffer = [0_u8; 64];
         loop {
-            match socket.recv(&mut buffer) {
+            let command = match socket.recv(&mut buffer) {
                 Ok(size) if &buffer[..size] == b"toggle" => {
                     log!("INFO", "compositor_toggle", "source=unix_socket");
-                    if tx.send(()).is_err() {
-                        break;
-                    }
+                    Command::Toggle
                 }
-                Ok(_) => {}
+                Ok(size) if &buffer[..size] == b"quit" => {
+                    log!("INFO", "quit_requested", "source=unix_socket");
+                    Command::Quit
+                }
+                Ok(_) => continue,
                 Err(error) => {
                     log!("ERROR", "control_listener_failed", "{error}");
                     break;
                 }
+            };
+            if tx.send(command).is_err() {
+                break;
             }
         }
     });

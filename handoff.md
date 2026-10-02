@@ -20,6 +20,9 @@ Updated: 2026-10-02.
 
 ## What it does
 
+0. `hydra-stt` opens the window; the daemon is `hydra-stt --daemon`
+   (changed 2026-10-02; bare `hydra-stt` used to be the daemon). The window
+   starts it detached and stops it with a `quit` datagram on the socket.
 1. Toggle arrives from the compositor (`hydra-stt --toggle` over
    `$XDG_RUNTIME_DIR/hydra-stt.sock`).
 2. Pause playing MPRIS players, play the press cue, record with `arecord`
@@ -42,7 +45,15 @@ Updated: 2026-10-02.
 ## Files
 
 - `src/main.rs` — CLI, daemon loop, recording, transcription, typing, sounds
-- `src/config.rs` — `config.toml` loading, defaults, XDG paths
+- `src/config.rs` — `config.toml` loading, defaults, XDG paths, and saving
+  through `toml_edit` so comments survive
+- `src/settings.rs` — the window (`hydra-stt` with no arguments), egui via
+  eframe (glow, Wayland only): Home page with daemon status/start/stop/
+  restart/autostart, then pages editing every config option
+- `src/service.rs` — starting the daemon detached (`--daemon`), stopping it
+  over the control socket, and the systemd user unit for start at login
+- `assets/hydra-stt.desktop` — menu entry; installed by the .deb and by
+  `install.sh` (with an absolute Exec path)
 - `src/profiles.rs` — profiles, built-in prompts, System One routing, memory
   and history injection
 - `src/agent.rs` — computer agent loop (shape of Anthropic's `loop.py`)
