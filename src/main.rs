@@ -136,8 +136,9 @@ async fn main() -> Result<()> {
 
 async fn run(mode: Mode, config: &config::Config, config_path: &Path) -> Result<()> {
     if let Mode::Cleanup = mode {
-        let cleaner = cleanup::Cleaner::from_config(&config.cleanup, config_path)?
-            .context("cleanup is disabled in the configuration")?;
+        let cleaner =
+            cleanup::Cleaner::from_config(&config.cleanup, config.output.newlines, config_path)?
+                .context("cleanup is disabled in the configuration")?;
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text)?;
         println!("{}", cleaner.clean(&reqwest::Client::new(), &text).await?);
@@ -151,7 +152,8 @@ async fn run(mode: Mode, config: &config::Config, config_path: &Path) -> Result<
         return Ok(());
     }
 
-    let cleaner = cleanup::Cleaner::from_config(&config.cleanup, config_path)?;
+    let cleaner =
+        cleanup::Cleaner::from_config(&config.cleanup, config.output.newlines, config_path)?;
 
     let (hotkey_tx, mut hotkey_rx) = tokio_mpsc::unbounded_channel();
     let _control_listener = control::start(hotkey_tx.clone())?;
@@ -287,8 +289,28 @@ async fn process_recording(
         );
         return;
     }
+    let text = normalize_lines(&text, config.output.newlines);
     if let Err(error) = paste_and_submit(&text, config.output.press_enter) {
         log!("ERROR", "insertion_failed", "cycle={cycle} {error:#}");
+    }
+}
+
+/// A typed "\n" is a Return key press that would submit partial text, so line
+/// breaks are either removed or kept for typing as Shift+Enter.
+fn normalize_lines(text: &str, newlines: config::Newlines) -> String {
+    let join_words = |line: &str| line.split_whitespace().collect::<Vec<_>>().join(" ");
+    match newlines {
+        config::Newlines::Space => join_words(text),
+        config::Newlines::ShiftEnter => {
+            let mut lines: Vec<String> = Vec::new();
+            for line in text.lines().map(join_words) {
+                // Keep at most one blank line between paragraphs.
+                if !line.is_empty() || lines.last().is_some_and(|last| !last.is_empty()) {
+                    lines.push(line);
+                }
+            }
+            lines.join("\n").trim_end().to_owned()
+        }
     }
 }
 
@@ -611,25 +633,57 @@ fn paste_and_submit(text: &str, press_enter: bool) -> Result<()> {
 }
 
 fn type_on_wayland(text: &str, press_enter: bool) -> Result<()> {
-    let type_status = Command::new("wtype")
-        .arg(text)
-        .status()
-        .context("could not run wtype; install wtype for Wayland keyboard output")?;
-    log!("INFO", "typing_result", "status={type_status}");
-    if !type_status.success() {
-        bail!("wtype failed while typing the transcript");
+    // Everything after `--` is text to wtype, so each line needs its own call.
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            wtype(
+                &["-M", "shift", "-k", "Return", "-m", "shift"],
+                "Shift+Enter",
+            )?;
+        }
+        if !line.is_empty() {
+            wtype(&["--", line], "the transcript")?;
+        }
     }
+    log!("INFO", "typing_result", "lines={}", text.lines().count());
     if !press_enter {
         return Ok(());
     }
 
-    let enter_status = Command::new("wtype")
-        .args(["-k", "Return"])
+    wtype(&["-k", "Return"], "Enter")?;
+    log!("INFO", "enter_result", "sent=true");
+    Ok(())
+}
+
+fn wtype(args: &[&str], what: &str) -> Result<()> {
+    let status = Command::new("wtype")
+        .args(args)
         .status()
-        .context("could not send Enter through wtype")?;
-    log!("INFO", "enter_result", "status={enter_status}");
-    if !enter_status.success() {
-        bail!("wtype failed while pressing Enter");
+        .context("could not run wtype; install wtype for Wayland keyboard output")?;
+    if !status.success() {
+        bail!("wtype failed while typing {what}: {status}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::Newlines::{ShiftEnter, Space};
+
+    #[test]
+    fn space_joins_everything_into_one_line() {
+        assert_eq!(
+            normalize_lines("First  line.\n\nSecond\tline.\n", Space),
+            "First line. Second line."
+        );
+    }
+
+    #[test]
+    fn shift_enter_keeps_single_blank_lines() {
+        assert_eq!(
+            normalize_lines("One  two.\n\n\n\nThree.\n- four\n\n", ShiftEnter),
+            "One two.\n\nThree.\n- four"
+        );
+    }
 }

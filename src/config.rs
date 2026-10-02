@@ -117,16 +117,21 @@ impl Default for Media {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Output {
     pub press_enter: bool,
+    pub newlines: Newlines,
 }
 
-impl Default for Output {
-    fn default() -> Self {
-        Self { press_enter: true }
-    }
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Newlines {
+    /// Join everything into one line; nothing can trigger a submit.
+    #[default]
+    Space,
+    /// Keep line breaks and type each one as Shift+Enter.
+    ShiftEnter,
 }
 
 #[derive(Debug, Default, Deserialize)]

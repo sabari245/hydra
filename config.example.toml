@@ -47,8 +47,14 @@ volume = 90
 pause_while_recording = true
 
 [output]
-# Press Enter after typing the transcript.
-press_enter = true
+# Press Enter after typing the transcript (submits chat prompts and commands).
+press_enter = false
+# How line breaks in the transcript are typed:
+#   "space"        join everything into one line (safe everywhere)
+#   "shift_enter"  keep line breaks, typed as Shift+Enter. Works in browsers,
+#                  chat apps and Claude Code; in some terminals Shift+Enter is
+#                  sent as plain Enter and submits early.
+newlines = "space"
 
 [logging]
 # Defaults to ~/.local/state/hydra-stt ($XDG_STATE_HOME is respected).

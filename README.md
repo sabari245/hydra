@@ -52,7 +52,7 @@ then exits asking for your API keys.
 | `[recording]` | `device` (ALSA device for `arecord -D`; see `arecord -L`)      |
 | `[sounds]`    | `enabled`, `volume` (0-100), `press`, `release` (custom WAVs)  |
 | `[media]`     | `pause_while_recording`                                        |
-| `[output]`    | `press_enter`                                                  |
+| `[output]`    | `press_enter` (default off), `newlines` (`"space"` or `"shift_enter"`) |
 | `[logging]`   | `dir`                                                          |
 
 **API keys.** The file is created with permissions `600` in a `700`
@@ -70,7 +70,9 @@ hydra-stt
 
 A high click means recording started; a low click means it stopped. Media
 players that were playing are paused while recording and resumed afterwards.
-If cleanup fails, the raw transcript is typed instead. Empty cleaned text is
+If cleanup fails, the raw transcript is typed instead. Line breaks are
+joined into one line by default, because a typed newline is a Return key press
+that would submit partial text; `newlines = "shift_enter"` keeps them. Empty cleaned text is
 not typed and does not send Enter. SIGINT or SIGTERM stop the daemon cleanly.
 
 Other commands:
@@ -123,8 +125,10 @@ The feedback cues in `assets/` are embedded in the binary; regenerate them with
 
 ### Releasing
 
-CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on every push.
-To publish a release, bump `version` in `Cargo.toml`, then:
+Day-to-day work happens on the `dev` branch; `main` only receives merges for
+releases. CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on pushes
+to both. To publish a release, merge `dev` into `main`, bump `version` in
+`Cargo.toml`, then:
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
