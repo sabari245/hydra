@@ -4,7 +4,6 @@ use std::{
     collections::BTreeMap,
     env, fs,
     io::Write,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -19,6 +18,7 @@ pub const WHISPER_TURBO: &str = "whisper-large-v3-turbo";
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub groq: Groq,
+    pub sarvam: Sarvam,
     pub cleanup: Cleanup,
     pub isoquant: IsoQuant,
     pub router: Router,
@@ -29,6 +29,7 @@ pub struct Config {
     removed_computer: IgnoredAny,
     pub history: History,
     pub recording: Recording,
+    pub shortcut: Shortcut,
     pub sounds: Sounds,
     pub media: Media,
     pub output: Output,
@@ -47,6 +48,46 @@ impl Default for Groq {
         Self {
             api_key: String::new(),
             model: WHISPER_TURBO.to_owned(),
+        }
+    }
+}
+
+/// Experimental: Sarvam speech-to-text in place of Groq.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Sarvam {
+    pub enabled: bool,
+    pub api_key: String,
+    pub model: String,
+    pub mode: SarvamMode,
+}
+
+impl Default for Sarvam {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            model: "saaras:v4".to_owned(),
+            mode: SarvamMode::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SarvamMode {
+    /// Whatever language is spoken, type it in English.
+    #[default]
+    Translate,
+    /// Type it in the language it was spoken in.
+    Transcribe,
+}
+
+impl SarvamMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Translate => "translate",
+            Self::Transcribe => "transcribe",
         }
     }
 }
@@ -162,6 +203,22 @@ pub struct Recording {
     pub device: String,
 }
 
+/// The global shortcut the daemon registers on Windows. On Linux the
+/// compositor binds `hydra-stt --toggle` instead.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Shortcut {
+    pub keys: String,
+}
+
+impl Default for Shortcut {
+    fn default() -> Self {
+        Self {
+            keys: "Ctrl+Alt+Space".to_owned(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Sounds {
@@ -228,17 +285,29 @@ pub struct Logging {
     pub dir: Option<PathBuf>,
 }
 
-fn home() -> Result<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is not set")
-}
-
+/// A per-user base directory: `variable` or its `fallback` under $HOME.
+#[cfg(unix)]
 fn xdg_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
     match env::var_os(variable) {
         Some(directory) if Path::new(&directory).is_absolute() => Ok(PathBuf::from(directory)),
-        _ => Ok(home()?.join(fallback)),
+        _ => Ok(env::var_os("HOME")
+            .map(PathBuf::from)
+            .context("HOME is not set")?
+            .join(fallback)),
     }
+}
+
+/// A per-user base directory: %APPDATA% for settings, which roam with the
+/// profile, and %LOCALAPPDATA% for history and logs.
+#[cfg(windows)]
+fn xdg_dir(variable: &str, _fallback: &str) -> Result<PathBuf> {
+    let windows = match variable {
+        "XDG_CONFIG_HOME" => "APPDATA",
+        _ => "LOCALAPPDATA",
+    };
+    env::var_os(windows)
+        .map(PathBuf::from)
+        .with_context(|| format!("{windows} is not set"))
 }
 
 pub fn path() -> Result<PathBuf> {
@@ -256,14 +325,12 @@ pub fn ensure_exists(path: &Path) -> Result<bool> {
         return Ok(false);
     }
     if let Some(directory) = path.parent() {
-        fs::create_dir_all(directory)
+        crate::private::create_dir(directory)
             .with_context(|| format!("could not create {}", directory.display()))?;
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
     }
-    fs::OpenOptions::new()
+    crate::private::options()
         .write(true)
         .create_new(true)
-        .mode(0o600)
         .open(path)
         .and_then(|mut file| file.write_all(TEMPLATE.as_bytes()))
         .with_context(|| format!("could not write {}", path.display()))?;
@@ -279,6 +346,9 @@ impl Config {
         }
         if let Ok(model) = env::var("GROQ_MODEL") {
             config.groq.model = model;
+        }
+        if let Ok(key) = env::var("SARVAM_API_KEY") {
+            config.sarvam.api_key = key;
         }
         if let Ok(key) = env::var("ISO_QUANT_API_KEY") {
             config.isoquant.api_key = key;
@@ -308,6 +378,7 @@ impl Config {
         if !(0.0..=1.0).contains(&self.router.min_confidence) {
             bail!("router.min_confidence must be between 0 and 1");
         }
+        crate::shortcut::Shortcut::parse(&self.shortcut.keys).context("invalid shortcut.keys")?;
         Ok(())
     }
 
@@ -320,11 +391,10 @@ impl Config {
             .with_context(|| format!("invalid config {}", path.display()))?;
         self.write_to(&mut document);
         let temporary = path.with_extension("toml.tmp");
-        fs::OpenOptions::new()
+        crate::private::options()
             .write(true)
             .create(true)
             .truncate(true)
-            .mode(0o600)
             .open(&temporary)
             .and_then(|mut file| file.write_all(document.to_string().as_bytes()))
             .with_context(|| format!("could not write {}", temporary.display()))?;
@@ -338,6 +408,11 @@ impl Config {
         let groq = section(root, "groq");
         set(groq, "api_key", &self.groq.api_key);
         set(groq, "model", &self.groq.model);
+        let sarvam = section(root, "sarvam");
+        set(sarvam, "enabled", self.sarvam.enabled);
+        set(sarvam, "api_key", &self.sarvam.api_key);
+        set(sarvam, "model", &self.sarvam.model);
+        set(sarvam, "mode", self.sarvam.mode.as_str());
         let cleanup = section(root, "cleanup");
         set(cleanup, "enabled", self.cleanup.enabled);
         let isoquant = section(root, "isoquant");
@@ -366,6 +441,7 @@ impl Config {
         set(history, "enabled", self.history.enabled);
         set(history, "entries", self.history.entries as i64);
         set(section(root, "recording"), "device", &self.recording.device);
+        set(section(root, "shortcut"), "keys", &self.shortcut.keys);
         let sounds = section(root, "sounds");
         set(sounds, "enabled", self.sounds.enabled);
         set(sounds, "volume", i64::from(self.sounds.volume));
@@ -384,6 +460,18 @@ impl Config {
         if key.is_empty() {
             bail!(
                 "no Groq API key; set groq.api_key in {} or export GROQ_API_KEY",
+                path.display()
+            );
+        }
+        Ok(key)
+    }
+
+    pub fn sarvam_api_key(&self, path: &Path) -> Result<&str> {
+        let key = self.sarvam.api_key.trim();
+        if key.is_empty() {
+            bail!(
+                "no Sarvam API key; set sarvam.api_key in {}, export SARVAM_API_KEY, \
+                 or set sarvam.enabled = false",
                 path.display()
             );
         }
@@ -470,13 +558,6 @@ fn set_path(table: &mut toml_edit::Table, key: &str, path: Option<&Path>) {
     }
 }
 
-/// Returns true when the file can be read by users other than its owner.
-pub fn is_shared(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|metadata| metadata.permissions().mode() & 0o077 != 0)
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +605,9 @@ mod tests {
         config.sounds.volume = 40;
         config.sounds.press = Some(PathBuf::from("/tmp/press.wav"));
         config.output.newlines = Newlines::ShiftEnter;
+        config.sarvam.enabled = true;
+        config.sarvam.api_key = "sk_test".to_owned();
+        config.sarvam.mode = SarvamMode::Transcribe;
         config.profiles.0.remove("prompt");
         config.profiles.0.insert(
             "email".to_owned(),
@@ -535,7 +619,9 @@ mod tests {
         );
         let (text, read) = saved(&config);
         assert_eq!(read, config);
-        assert!(text.contains("# Speech-to-text. Required.\napi_key = \"gsk_test\""));
+        assert!(text.contains(
+            "# Speech-to-text. Required unless [sarvam] is enabled.\napi_key = \"gsk_test\""
+        ));
         assert!(text.contains("prompt = '''\nLine one.\nLine 'two'.\n'''"));
         assert!(!text.contains("[profiles.prompt]"));
     }

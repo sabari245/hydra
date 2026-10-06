@@ -1,6 +1,7 @@
 # Hydra STT
 
-Push-to-toggle speech-to-text dictation for Wayland on x86_64 Linux. Press a key, speak, press
+Push-to-toggle speech-to-text dictation for Wayland on x86_64 Linux and for
+Windows. Press a key, speak, press
 it again: the recording is transcribed with Groq Whisper, routed to a
 processing profile by IsoQuant's System One decision model, rewritten by that
 profile with `glm-5.3-flash`, and typed into the focused application.
@@ -30,14 +31,25 @@ a `.deb` package and a `.tar.gz` archive for x86_64 (glibc 2.31+):
 sudo apt install ./hydra-stt_amd64.deb
 ```
 
-### Runtime requirements
+### Windows
+
+Download `hydra-stt-x86_64-pc-windows-msvc.zip` from the
+[latest release](https://github.com/sabari245/hydra/releases/latest), unzip
+it anywhere, and run `hydra-stt.exe`. Nothing else is needed: recording,
+typing, sounds and media pausing use Windows itself. Hydra registers its own
+global shortcut, `Ctrl+Alt+Space` by default (change it on the Home page of
+the window). Settings live in `%APPDATA%\hydra-stt\config.toml`; history and
+logs in `%LOCALAPPDATA%\hydra-stt`. Start at login adds Hydra to your user's
+Run registry key.
+
+### Runtime requirements (Linux)
 
 - `arecord` (alsa-utils) for recording
 - A Wayland session, and `wtype` for typing
 - `paplay` (pulseaudio-utils, works with PipeWire) for feedback sounds
 - `playerctl` for pausing media while recording (optional)
 - For the window: EGL and xkbcommon (`libegl1`, `libxkbcommon0`)
-- A Groq API key, and an IsoQuant API key unless cleanups are off
+- A Groq API key (or a Sarvam key with the experimental Sarvam speech on), and an IsoQuant API key unless cleanups are off
   (`[cleanup] enabled = false` or `[isoquant] enabled = false`)
 
 ## Set up
@@ -70,6 +82,7 @@ option commented (see [`config.example.toml`](config.example.toml)).
 | Section       | Options                                                        |
 | ------------- | -------------------------------------------------------------- |
 | `[groq]`      | `api_key`, `model`                                             |
+| `[sarvam]`    | `enabled`, `api_key`, `model`, `mode` (experimental)           |
 | `[cleanup]`   | `enabled` (master switch for all cleanup profiles)             |
 | `[isoquant]`  | `enabled`, `api_key`, `api_url`, `timeout_secs`                |
 | `[router]`    | `model`, `instructions`, `min_confidence`                      |
@@ -171,7 +184,8 @@ on the compositor's `PATH`.
 ## Logs
 
 Installed builds append to `~/.local/state/hydra-stt/hydra.log`
-(`$XDG_STATE_HOME` is respected, or set `[logging] dir`); debug builds from a
+(`$XDG_STATE_HOME` is respected, or set `[logging] dir`), or to
+`%LOCALAPPDATA%\hydra-stt\hydra.log` on Windows; debug builds from a
 checkout write to `logs/` in the repository. Events are also printed to
 stderr. Logs contain your dictated text but never API keys or audio.
 
@@ -200,7 +214,7 @@ The feedback cues in `assets/` are embedded in the binary; regenerate them with
 
 Day-to-day work happens on the `dev` branch; `main` only receives merges for
 releases. CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on pushes
-to both. To publish a release, merge `dev` into `main`, bump `version` in
+to both, on Linux and on Windows. To publish a release, merge `dev` into `main`, bump `version` in
 `Cargo.toml`, then:
 
 ```sh
@@ -209,7 +223,14 @@ git tag v0.1.0 && git push origin v0.1.0
 
 `.github/workflows/release.yml` builds the x86_64 binary with
 `cargo-zigbuild` against glibc 2.31, packages `.tar.gz` and `.deb` files with
-checksums, and attaches them and `install.sh` to a GitHub release.
+checksums, and attaches them and `install.sh` to a GitHub release. It also
+builds a Windows `.zip` on `windows-latest`. That build is optional: manual
+runs have a "Also build for Windows" box, and tag builds skip it when the
+repository variable `BUILD_WINDOWS` is `false`.
+
+To check the Windows build from Linux, install `mingw-w64-gcc` and the
+`x86_64-pc-windows-gnu` Rust target, then run
+`cargo clippy --target x86_64-pc-windows-gnu`.
 
 ## License
 

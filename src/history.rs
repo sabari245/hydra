@@ -6,9 +6,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
+    fs,
     io::Write,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -46,18 +45,15 @@ pub struct History {
 }
 
 fn private_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("could not create {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
+    crate::private::create_dir(path).with_context(|| format!("could not create {}", path.display()))
 }
 
 fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
     let temporary = path.with_extension("tmp");
-    OpenOptions::new()
+    crate::private::options()
         .write(true)
         .create(true)
         .truncate(true)
-        .mode(0o600)
         .open(&temporary)
         .and_then(|mut file| file.write_all(contents))
         .with_context(|| format!("could not write {}", temporary.display()))?;
@@ -122,10 +118,9 @@ impl History {
         let path = self.history_path(profile);
         let mut line = serde_json::to_string(entry)?;
         line.push('\n');
-        OpenOptions::new()
+        crate::private::options()
             .create(true)
             .append(true)
-            .mode(0o600)
             .open(&path)
             .and_then(|mut file| file.write_all(line.as_bytes()))
             .with_context(|| format!("could not write {}", path.display()))?;

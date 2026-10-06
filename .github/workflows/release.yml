@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      windows:
+        description: Also build for Windows
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -69,10 +74,51 @@ jobs:
           name: dist-${{ matrix.target }}
           path: dist/*
 
+  # Optional: on for manual runs with the box ticked, and for tags unless the
+  # repository variable BUILD_WINDOWS is set to "false".
+  build-windows:
+    name: Build x86_64-pc-windows-msvc
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.windows) ||
+      (github.event_name == 'push' && vars.BUILD_WINDOWS != 'false')
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package zip
+        run: |
+          name=hydra-stt-x86_64-pc-windows-msvc
+          mkdir -p dist "$name"
+          cp target/release/hydra-stt.exe README.md LICENSE config.example.toml "$name/"
+          7z a "dist/$name.zip" "$name"
+
+      - name: Checksums
+        working-directory: dist
+        run: for file in *; do sha256sum "$file" > "$file.sha256"; done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-x86_64-pc-windows-msvc
+          path: dist/*
+
   release:
     name: Publish release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, build-windows]
+    # Publishes without Windows when that build was skipped, not when it failed.
+    if: >-
+      always() && startsWith(github.ref, 'refs/tags/') &&
+      needs.build.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.build-windows.result)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

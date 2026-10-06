@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::File,
     io::Write,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
@@ -11,16 +10,14 @@ use std::{
 static LOG: OnceLock<Mutex<File>> = OnceLock::new();
 
 pub fn init(directory: &Path) -> Result<PathBuf> {
-    fs::create_dir_all(directory)
+    crate::private::create_dir(directory)
         .with_context(|| format!("could not create log directory {}", directory.display()))?;
-    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
     let path = directory.join("hydra.log");
-    let file = OpenOptions::new()
+    let file = crate::private::options()
         .create(true)
         .append(true)
-        .mode(0o600)
         .open(&path)?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    crate::private::restrict(&path)?;
     LOG.set(Mutex::new(file))
         .map_err(|_| anyhow::anyhow!("logger already initialized"))?;
     Ok(path)

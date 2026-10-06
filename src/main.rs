@@ -1,3 +1,6 @@
+// No console window on Windows; commands run from a terminal attach to it.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 macro_rules! log {
     ($level:expr, $event:expr, $($arg:tt)*) => {
         $crate::logging::event($level, $event, format_args!($($arg)*))
@@ -9,34 +12,24 @@ mod control;
 mod history;
 mod logging;
 mod media;
+mod private;
 mod profiles;
+mod recording;
+mod sarvam;
 mod service;
 mod settings;
+mod shortcut;
+mod sounds;
 mod typing;
+mod wav;
 
 use anyhow::{Context, Result, bail};
-use nix::{sys::signal, unistd::Pid};
 use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
-use std::{
-    env, fs,
-    io::{BufRead, BufReader, Read, Write},
-    path::{Path, PathBuf},
-    process::Stdio,
-    process::{Child, Command},
-    sync::Arc,
-    thread,
-    time::Instant,
-};
-use tokio::{
-    signal::unix::{self as tokio_signal, SignalKind},
-    sync::mpsc as tokio_mpsc,
-    task::JoinHandle,
-};
+use std::{env, fs, io::Read, path::Path, sync::Arc, time::Instant};
+use tokio::{sync::mpsc as tokio_mpsc, task::JoinHandle};
 
 const GROQ_API_URL: &str = "https://api.groq.com/openai/v1";
-const PRESS_SOUND: &[u8] = include_bytes!("../assets/press.wav");
-const RELEASE_SOUND: &[u8] = include_bytes!("../assets/release.wav");
 const USAGE: &str = "\
 Usage: hydra-stt [COMMAND]
 
@@ -44,7 +37,9 @@ Commands:
   (none)         Open the Hydra STT window: settings, and starting or
                  stopping Hydra in the background
   --daemon       Run the dictation daemon (what runs in the background)
-  --toggle       Start or stop recording in the running daemon
+  --toggle       Start or stop recording in the running daemon (bind it to a
+                 key in your compositor; on Windows, Hydra registers the
+                 shortcut set in the window itself)
   --stop         Stop the running daemon
   --process [P]  Process a transcript from stdin, routed to a profile or
                  always through profile P, and print the text to type
@@ -57,14 +52,6 @@ enum Mode {
     Daemon,
     Process(Option<String>),
     Models,
-}
-
-#[derive(Debug)]
-struct Recording {
-    child: Child,
-    path: PathBuf,
-    started: Instant,
-    _paused_players: media::PausedPlayers,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +71,14 @@ struct ModelInfo {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(windows)]
+    // SAFETY: attaching to the parent's console, if there is one, has no
+    // other effect.
+    unsafe {
+        let _ = windows::Win32::System::Console::AttachConsole(
+            windows::Win32::System::Console::ATTACH_PARENT_PROCESS,
+        );
+    }
     let mode = match env::args().nth(1).as_deref() {
         None | Some("--settings") => return settings::run(),
         Some("--daemon") => Mode::Daemon,
@@ -126,7 +121,7 @@ async fn main() -> Result<()> {
         config_path.display(),
         log_path.display()
     );
-    if config::is_shared(&config_path) {
+    if private::is_shared(&config_path) {
         log!(
             "WARN",
             "config_permissions",
@@ -154,45 +149,52 @@ async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Re
         println!("{output}");
         return Ok(());
     }
-    let api_key: Arc<str> = config.groq_api_key(config_path)?.into();
-    let model = config.groq.model.as_str();
-
     if let Mode::Models = mode {
-        list_models(&api_key).await?;
+        list_models(config.groq_api_key(config_path)?).await?;
         return Ok(());
     }
+    let api_key: Arc<str> = if config.sarvam.enabled {
+        config.sarvam_api_key(config_path)?
+    } else {
+        config.groq_api_key(config_path)?
+    }
+    .into();
 
     let pipeline = profiles::Pipeline::from_config(config, config_path)?.map(Arc::new);
 
     let (toggle_tx, mut toggle_rx) = tokio_mpsc::unbounded_channel();
-    let _control_listener = control::start(toggle_tx)?;
+    let _control_listener = control::start(toggle_tx, &config.shortcut)?;
+    #[cfg(target_os = "linux")]
     if env::var_os("WAYLAND_DISPLAY").is_none() {
         bail!("Hydra STT needs a Wayland session (WAYLAND_DISPLAY is not set)");
     }
 
     println!("Hydra STT is running.");
     println!("Bind `hydra-stt --toggle` in your compositor to start/stop recording.");
-    println!("Groq model: {model}");
+    if config.sarvam.enabled {
+        let sarvam = &config.sarvam;
+        println!("Sarvam model: {} ({})", sarvam.model, sarvam.mode.as_str());
+    } else {
+        println!("Groq model: {}", config.groq.model);
+    }
     match &pipeline {
         Some(pipeline) => println!("Profiles: {}", pipeline.profile_names().join(", ")),
         None => println!("Profiles: disabled, typing raw transcripts"),
     }
 
     let client = reqwest::Client::new();
-    let mut recording = None;
+    let mut recording: Option<recording::Recording> = None;
     let mut processing: Option<JoinHandle<()>> = None;
 
     let mut cycle = 0_u64;
-    let mut terminate = tokio_signal::signal(SignalKind::terminate())?;
-    let mut interrupt = tokio_signal::signal(SignalKind::interrupt())?;
+    let mut shutdown = std::pin::pin!(shutdown_signal()?);
     loop {
         tokio::select! {
             command = toggle_rx.recv() => match command {
                 Some(control::Command::Toggle) => {}
                 Some(control::Command::Quit) | None => break,
             },
-            _ = terminate.recv() => break,
-            _ = interrupt.recv() => break,
+            _ = &mut shutdown => break,
         }
         let busy = processing.as_ref().is_some_and(|task| !task.is_finished());
         log!(
@@ -202,8 +204,8 @@ async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Re
             recording.is_some()
         );
         if let Some(active) = recording.take() {
-            let audio_path = stop_recording(active)?;
-            play_click(&config.sounds, false);
+            let audio_path = active.stop()?;
+            sounds::play_click(&config.sounds, false);
             let (client, config, api_key, pipeline) = (
                 client.clone(),
                 Arc::clone(config),
@@ -228,7 +230,7 @@ async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Re
                 task.abort();
             }
             log!("INFO", "processing_cancelled", "cycle={cycle}");
-            play_click(&config.sounds, false);
+            sounds::play_click(&config.sounds, false);
             println!("Cancelled.");
         } else {
             cycle += 1;
@@ -238,8 +240,11 @@ async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Re
             } else {
                 media::PausedPlayers::default()
             };
-            play_click(&config.sounds, true);
-            recording = Some(start_recording(&config.recording, paused_players)?);
+            sounds::play_click(&config.sounds, true);
+            recording = Some(recording::Recording::start(
+                &config.recording,
+                paused_players,
+            )?);
             println!("Recording...");
         }
     }
@@ -254,10 +259,32 @@ async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Re
         task.abort();
     }
     if let Some(active) = recording {
-        let audio_path = stop_recording(active)?;
+        let audio_path = active.stop()?;
         let _ = fs::remove_file(audio_path);
     }
     Ok(())
+}
+
+/// Resolves when the daemon is asked to exit: SIGTERM or SIGINT on Linux,
+/// Ctrl+C on Windows.
+#[cfg(unix)]
+fn shutdown_signal() -> Result<impl Future<Output = ()>> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    Ok(async move {
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+        }
+    })
+}
+
+#[cfg(windows)]
+fn shutdown_signal() -> Result<impl Future<Output = ()>> {
+    Ok(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
 }
 
 async fn process_recording(
@@ -278,7 +305,15 @@ async fn process_recording(
     }
 
     println!("Transcribing...");
-    let text = match transcribe(client, api_key, &config.groq.model, audio_path).await {
+    let transcript = if config.sarvam.enabled {
+        match tokio::fs::read(audio_path).await {
+            Ok(wav) => sarvam::transcribe(client, api_key, &config.sarvam, &wav).await,
+            Err(error) => Err(anyhow::Error::new(error).context("could not read the recording")),
+        }
+    } else {
+        transcribe(client, api_key, &config.groq.model, audio_path).await
+    };
+    let text = match transcript {
         Ok(text) if !text.trim().is_empty() => text,
         Ok(_) => {
             log!("WARN", "transcript_empty", "cycle={cycle}");
@@ -310,70 +345,6 @@ async fn process_recording(
     if let Err(error) = typing::type_text(&text, config.output.press_enter) {
         log!("ERROR", "insertion_failed", "cycle={cycle} {error:#}");
     }
-}
-
-fn start_recording(
-    config: &config::Recording,
-    paused_players: media::PausedPlayers,
-) -> Result<Recording> {
-    let path = env::temp_dir().join(format!("hydra-stt-{}.wav", std::process::id()));
-    let mut command = Command::new("arecord");
-    command.args(["--quiet", "--format=S16_LE", "--rate=16000", "--channels=1"]);
-    if !config.device.is_empty() {
-        command.arg(format!("--device={}", config.device));
-    }
-    let mut child = command
-        .arg(&path)
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("could not start arecord; install ALSA utilities")?;
-
-    if let Some(stderr) = child.stderr.take() {
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                match line {
-                    Ok(line) => log!("WARN", "arecord_stderr", "{line}"),
-                    Err(error) => {
-                        log!("ERROR", "arecord_stderr_failed", "{error}");
-                        break;
-                    }
-                }
-            }
-        });
-    }
-    log!(
-        "INFO",
-        "recording_started",
-        "pid={} path={}",
-        child.id(),
-        path.display()
-    );
-    Ok(Recording {
-        child,
-        path,
-        started: Instant::now(),
-        _paused_players: paused_players,
-    })
-}
-
-fn stop_recording(mut recording: Recording) -> Result<PathBuf> {
-    signal::kill(
-        Pid::from_raw(recording.child.id() as i32),
-        signal::Signal::SIGINT,
-    )
-    .context("could not stop arecord")?;
-    let status = recording
-        .child
-        .wait()
-        .context("could not wait for arecord")?;
-    log!(
-        "INFO",
-        "recording_stopped",
-        "status={status} duration_ms={} bytes={:?}",
-        recording.started.elapsed().as_millis(),
-        fs::metadata(&recording.path).map(|m| m.len()).ok()
-    );
-    Ok(recording.path)
 }
 
 async fn transcribe(
@@ -457,52 +428,4 @@ async fn check_groq_response(response: reqwest::Response) -> Result<reqwest::Res
         bail!("Groq returned {status}: {}", response.text().await?);
     }
     Ok(response)
-}
-
-fn play_click(config: &config::Sounds, start: bool) {
-    if !config.enabled {
-        return;
-    }
-    let (name, custom, builtin) = if start {
-        ("press", &config.press, PRESS_SOUND)
-    } else {
-        ("release", &config.release, RELEASE_SOUND)
-    };
-    let volume = u32::from(config.volume) * 65536 / 100;
-    let mut command = Command::new("paplay");
-    command
-        .args(["--stream-name=Hydra STT feedback"])
-        .arg(format!("--volume={volume}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    if let Some(path) = custom {
-        command.arg(path);
-    }
-    let result = if custom.is_some() {
-        command.output()
-    } else {
-        command.stdin(Stdio::piped()).spawn().and_then(|mut child| {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(builtin)?;
-            }
-            child.wait_with_output()
-        })
-    };
-    match result {
-        Ok(output) if output.status.success() => {
-            log!("INFO", "audio_feedback_played", "cue={name} backend=paplay");
-        }
-        Ok(output) => log!(
-            "ERROR",
-            "audio_feedback_failed",
-            "cue={name} status={} stderr={:?}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ),
-        Err(error) => log!(
-            "ERROR",
-            "audio_feedback_failed",
-            "cue={name} {error}; install pulseaudio-utils or your distribution's paplay package"
-        ),
-    }
 }

@@ -4,8 +4,8 @@
 //! startup, so changes apply after a restart.
 
 use crate::{
-    config::{self, Config, Newlines, Profile},
-    profiles, service,
+    config::{self, Config, Newlines, Profile, SarvamMode},
+    profiles, service, shortcut,
 };
 use anyhow::Result;
 use eframe::egui::{
@@ -33,16 +33,18 @@ enum Page {
     Processing,
     Profiles,
     Output,
+    Experimental,
     Agent,
 }
 
-const PAGES: [(Page, &str); 6] = [
+const PAGES: [(Page, &str); 7] = [
     (Page::Home, "Home"),
     (Page::Keys, "API keys"),
     (Page::Speech, "Speech & sound"),
     (Page::Processing, "Processing"),
     (Page::Profiles, "Profiles"),
     (Page::Output, "Typing & logs"),
+    (Page::Experimental, "Experimental"),
 ];
 
 enum Status {
@@ -59,6 +61,7 @@ struct Settings {
     page: Page,
     show_groq_key: bool,
     show_isoquant_key: bool,
+    show_sarvam_key: bool,
     status: Option<Status>,
     groq_test: Option<mpsc::Receiver<Result<Vec<String>, String>>>,
     groq_result: Option<Result<String, String>>,
@@ -116,6 +119,7 @@ impl Settings {
             page: Page::Home,
             show_groq_key: false,
             show_isoquant_key: false,
+            show_sarvam_key: false,
             status: None,
             groq_test: None,
             groq_result: None,
@@ -176,7 +180,17 @@ impl Settings {
     /// environment.
     fn warnings(&self) -> Vec<&'static str> {
         let mut warnings = Vec::new();
-        if self.config.groq.api_key.trim().is_empty() && env::var_os("GROQ_API_KEY").is_none() {
+        if self.config.sarvam.enabled {
+            if self.config.sarvam.api_key.trim().is_empty()
+                && env::var_os("SARVAM_API_KEY").is_none()
+            {
+                warnings.push(
+                    "Add a Sarvam API key on the Experimental page, or turn Sarvam off there.",
+                );
+            }
+        } else if self.config.groq.api_key.trim().is_empty()
+            && env::var_os("GROQ_API_KEY").is_none()
+        {
             warnings.push("Add a Groq API key. Hydra needs it to transcribe your speech.");
         }
         if self.config.cleanup.enabled
@@ -398,6 +412,7 @@ impl eframe::App for Settings {
                                         Page::Processing => self.processing_page(ui),
                                         Page::Profiles => self.profiles_page(ui),
                                         Page::Output => self.output_page(ui),
+                                        Page::Experimental => self.experimental_page(ui),
                                         Page::Agent => agent_page(ui),
                                     }
                                 });
@@ -654,6 +669,10 @@ impl Settings {
             ),
         });
 
+        if cfg!(windows) {
+            self.windows_shortcut(ui);
+            return;
+        }
         section_title(
             ui,
             "Shortcut",
@@ -686,6 +705,33 @@ impl Settings {
         });
     }
 
+    /// On Windows, Hydra registers the shortcut itself.
+    fn windows_shortcut(&mut self, ui: &mut egui::Ui) {
+        let p = theme::Palette::of(ui);
+        section_title(
+            ui,
+            "Shortcut",
+            "Press it in any app to start recording, and again to stop.",
+        );
+        card(ui, |ui| {
+            field(
+                ui,
+                "Keys",
+                "For example Ctrl+Alt+Space, Win+Shift+D or F9. Save and restart Hydra \
+                 to use a new shortcut.",
+                |ui| {
+                    text(ui, &mut self.config.shortcut.keys, "Ctrl+Alt+Space");
+                    if let Err(error) = shortcut::Shortcut::parse(&self.config.shortcut.keys) {
+                        ui.add(
+                            egui::Label::new(RichText::new(error.to_string()).color(p.error))
+                                .wrap(),
+                        );
+                    }
+                },
+            );
+        });
+    }
+
     fn keys_page(&mut self, ui: &mut egui::Ui) {
         let p = theme::Palette::of(ui);
         page_title(
@@ -697,7 +743,11 @@ impl Settings {
             ),
         );
 
-        section_title(ui, "Groq", "Transcribes your speech. Required.");
+        section_title(
+            ui,
+            "Groq",
+            "Transcribes your speech. Required unless Sarvam is on (Experimental).",
+        );
         card(ui, |ui| {
             secret(
                 ui,
@@ -801,8 +851,13 @@ impl Settings {
             field(
                 ui,
                 "Microphone",
-                "An ALSA capture device, as listed by arecord -L. Leave empty for the \
-                 system default.",
+                if cfg!(windows) {
+                    "The name of an input device, as shown in Windows Sound settings. \
+                     Leave empty for the default microphone."
+                } else {
+                    "An ALSA capture device, as listed by arecord -L. Leave empty for the \
+                     system default."
+                },
                 |ui| text(ui, &mut self.config.recording.device, "System default"),
             );
         });
@@ -1076,6 +1131,74 @@ impl Settings {
                     self.reload();
                     self.status = None;
                 }
+            });
+        });
+    }
+}
+
+impl Settings {
+    fn experimental_page(&mut self, ui: &mut egui::Ui) {
+        let p = theme::Palette::of(ui);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Experimental")
+                    .font(theme::bold(28.0))
+                    .color(p.ink),
+            );
+            pill(ui, "Preview", p.warn);
+        });
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new("Features that are still being tried out. They are off by default.")
+                .color(p.mist),
+        );
+
+        section_title(
+            ui,
+            "Sarvam speech",
+            "Transcribes with Sarvam instead of Groq. It detects the language you speak, \
+             including Indian languages.",
+        );
+        card(ui, |ui| {
+            let sarvam = &mut self.config.sarvam;
+            row(
+                ui,
+                "Use Sarvam",
+                "Send your speech to Sarvam instead of Groq Whisper.",
+                |ui| {
+                    toggle(ui, &mut sarvam.enabled);
+                },
+            );
+            ui.add_enabled_ui(sarvam.enabled, |ui| {
+                divider(ui);
+                field(ui, "API key", "", |ui| {
+                    secret(ui, &mut sarvam.api_key, &mut self.show_sarvam_key, "sk_…");
+                    env_note(ui, "SARVAM_API_KEY");
+                    ui.horizontal(|ui| {
+                        ui.hyperlink_to("Get a key", "https://dashboard.sarvam.ai");
+                    });
+                });
+                divider(ui);
+                let mut transcribe = sarvam.mode == SarvamMode::Transcribe;
+                row(
+                    ui,
+                    "Keep the spoken language",
+                    "When off, whatever language you speak is translated and typed in \
+                     English. When on, it is typed in the language you spoke.",
+                    |ui| {
+                        if toggle(ui, &mut transcribe).changed() {
+                            sarvam.mode = if transcribe {
+                                SarvamMode::Transcribe
+                            } else {
+                                SarvamMode::Translate
+                            };
+                        }
+                    },
+                );
+                divider(ui);
+                field(ui, "Model", "The Sarvam speech model.", |ui| {
+                    text(ui, &mut sarvam.model, "saaras:v4");
+                });
             });
         });
     }
