@@ -12,7 +12,13 @@
 # Speech-to-text. Required.
 api_key = ""
 # Run `hydra-stt --models` to list the models on your account.
+# "whisper-large-v3" is the standard model; "whisper-large-v3-turbo" is faster.
 model = "whisper-large-v3-turbo"
+
+[cleanup]
+# Master switch for the cleanup profiles below. When false, the raw Whisper
+# transcript is typed with no post-processing.
+enabled = true
 
 [isoquant]
 # Post-processing with IsoQuant models. When disabled, or when a request

@@ -62,7 +62,6 @@ struct Settings {
     status: Option<Status>,
     groq_test: Option<mpsc::Receiver<Result<Vec<String>, String>>>,
     groq_result: Option<Result<String, String>>,
-    groq_models: Vec<String>,
     new_profile: String,
     confirm_close: bool,
     runtime: tokio::runtime::Handle,
@@ -120,7 +119,6 @@ impl Settings {
             status: None,
             groq_test: None,
             groq_result: None,
-            groq_models: Vec::new(),
             new_profile: String::new(),
             confirm_close: false,
             runtime,
@@ -168,7 +166,7 @@ impl Settings {
     /// Errors that would stop the daemon from starting.
     fn check(&self) -> Result<(), String> {
         self.config.validate().map_err(|error| error.to_string())?;
-        if self.config.isoquant.enabled {
+        if self.config.cleanup.enabled && self.config.isoquant.enabled {
             profiles::check(&self.config, &self.path).map_err(|error| error.to_string())?;
         }
         Ok(())
@@ -181,7 +179,8 @@ impl Settings {
         if self.config.groq.api_key.trim().is_empty() && env::var_os("GROQ_API_KEY").is_none() {
             warnings.push("Add a Groq API key. Hydra needs it to transcribe your speech.");
         }
-        if self.config.isoquant.enabled
+        if self.config.cleanup.enabled
+            && self.config.isoquant.enabled
             && self.config.isoquant.api_key.trim().is_empty()
             && env::var_os("ISO_QUANT_API_KEY").is_none()
         {
@@ -222,11 +221,10 @@ impl Settings {
         };
         self.groq_test = None;
         self.groq_result = Some(match result {
-            Ok(models) => {
-                let message = format!("The key works. Speech models: {}.", models.join(", "));
-                self.groq_models = models;
-                Ok(message)
-            }
+            Ok(models) => Ok(format!(
+                "The key works. Speech models: {}.",
+                models.join(", ")
+            )),
             Err(error) => Err(error),
         });
     }
@@ -771,29 +769,31 @@ impl Settings {
             field(
                 ui,
                 "Speech model",
-                if self.groq_models.is_empty() {
-                    "The Groq Whisper model. Test your key on the API keys page to list \
-                     the models you can use."
-                } else {
-                    "The Groq Whisper model."
-                },
+                "The Groq Whisper model: the standard model or its faster turbo variant.",
                 |ui| {
-                    ui.horizontal(|ui| {
-                        text(ui, &mut self.config.groq.model, "whisper-large-v3-turbo");
-                        if !self.groq_models.is_empty() {
-                            egui::ComboBox::from_id_salt("groq_models")
-                                .selected_text("Choose")
-                                .show_ui(ui, |ui| {
-                                    for model in &self.groq_models {
-                                        ui.selectable_value(
-                                            &mut self.config.groq.model,
-                                            model.clone(),
-                                            model,
-                                        );
-                                    }
-                                });
-                        }
-                    });
+                    let model = &mut self.config.groq.model;
+                    egui::ComboBox::from_id_salt("groq_model")
+                        .selected_text(model.as_str())
+                        .width(300.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                model,
+                                config::WHISPER_STANDARD.to_owned(),
+                                config::WHISPER_STANDARD,
+                            );
+                            ui.selectable_value(
+                                model,
+                                config::WHISPER_TURBO.to_owned(),
+                                config::WHISPER_TURBO,
+                            );
+                            // A model set by GROQ_MODEL or by hand stays selectable.
+                            if model.as_str() != config::WHISPER_STANDARD
+                                && model.as_str() != config::WHISPER_TURBO
+                            {
+                                let custom = model.clone();
+                                ui.selectable_value(model, custom.clone(), custom);
+                            }
+                        });
                     env_note(ui, "GROQ_MODEL");
                 },
             );
@@ -855,6 +855,16 @@ impl Settings {
         card(ui, |ui| {
             row(
                 ui,
+                "Clean up transcripts",
+                "The master switch for every cleanup profile. When off, Hydra types \
+                 exactly what Whisper heard.",
+                |ui| {
+                    toggle(ui, &mut self.config.cleanup.enabled);
+                },
+            );
+            divider(ui);
+            row(
+                ui,
                 "Process with IsoQuant",
                 "When off, or when a request fails, Hydra types exactly what you said.",
                 |ui| {
@@ -863,7 +873,7 @@ impl Settings {
             );
         });
 
-        let enabled = self.config.isoquant.enabled;
+        let enabled = self.config.cleanup.enabled && self.config.isoquant.enabled;
         ui.add_enabled_ui(enabled, |ui| {
             section_title(ui, "Connection", "");
             card(ui, |ui| {

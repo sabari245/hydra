@@ -37,7 +37,8 @@ sudo apt install ./hydra-stt_amd64.deb
 - `paplay` (pulseaudio-utils, works with PipeWire) for feedback sounds
 - `playerctl` for pausing media while recording (optional)
 - For the window: EGL and xkbcommon (`libegl1`, `libxkbcommon0`)
-- A Groq API key, and an IsoQuant API key unless `[isoquant] enabled = false`
+- A Groq API key, and an IsoQuant API key unless cleanups are off
+  (`[cleanup] enabled = false` or `[isoquant] enabled = false`)
 
 ## Set up
 
@@ -69,6 +70,7 @@ option commented (see [`config.example.toml`](config.example.toml)).
 | Section       | Options                                                        |
 | ------------- | -------------------------------------------------------------- |
 | `[groq]`      | `api_key`, `model`                                             |
+| `[cleanup]`   | `enabled` (master switch for all cleanup profiles)             |
 | `[isoquant]`  | `enabled`, `api_key`, `api_url`, `timeout_secs`                |
 | `[router]`    | `model`, `instructions`, `min_confidence`                      |
 | `[profiles.NAME]` | `description`, `model`, `prompt`                           |

@@ -11,10 +11,15 @@ use std::{
 pub const APP_NAME: &str = "hydra-stt";
 const TEMPLATE: &str = include_str!("../config.example.toml");
 
+/// Groq's Whisper models.
+pub const WHISPER_STANDARD: &str = "whisper-large-v3";
+pub const WHISPER_TURBO: &str = "whisper-large-v3-turbo";
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub groq: Groq,
+    pub cleanup: Cleanup,
     pub isoquant: IsoQuant,
     pub router: Router,
     pub profiles: Profiles,
@@ -41,8 +46,21 @@ impl Default for Groq {
     fn default() -> Self {
         Self {
             api_key: String::new(),
-            model: "whisper-large-v3-turbo".to_owned(),
+            model: WHISPER_TURBO.to_owned(),
         }
+    }
+}
+
+/// Master switch for every cleanup profile.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Cleanup {
+    pub enabled: bool,
+}
+
+impl Default for Cleanup {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -320,6 +338,8 @@ impl Config {
         let groq = section(root, "groq");
         set(groq, "api_key", &self.groq.api_key);
         set(groq, "model", &self.groq.model);
+        let cleanup = section(root, "cleanup");
+        set(cleanup, "enabled", self.cleanup.enabled);
         let isoquant = section(root, "isoquant");
         set(isoquant, "enabled", self.isoquant.enabled);
         set(isoquant, "api_key", &self.isoquant.api_key);

@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
 async fn run(mode: Mode, config: &Arc<config::Config>, config_path: &Path) -> Result<()> {
     if let Mode::Process(profile) = &mode {
         let pipeline = profiles::Pipeline::from_config(config, config_path)?
-            .context("IsoQuant processing is disabled in the configuration")?;
+            .context("Cleanup is disabled in the configuration")?;
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text)?;
         let output = pipeline

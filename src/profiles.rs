@@ -182,8 +182,12 @@ pub fn check(config: &config::Config, path: &Path) -> Result<()> {
 }
 
 impl Pipeline {
-    /// Returns `None` when IsoQuant post-processing is disabled.
+    /// Returns `None` when cleanup is disabled or IsoQuant post-processing is
+    /// disabled.
     pub fn from_config(config: &config::Config, path: &Path) -> Result<Option<Self>> {
+        if !config.cleanup.enabled {
+            return Ok(None);
+        }
         let isoquant = &config.isoquant;
         if !isoquant.enabled {
             return Ok(None);
@@ -192,7 +196,7 @@ impl Pipeline {
         if api_key.is_empty() {
             bail!(
                 "no IsoQuant API key; set isoquant.api_key in {}, export ISO_QUANT_API_KEY, \
-                 or set isoquant.enabled = false",
+                 or turn cleanups off with cleanup.enabled = false",
                 path.display()
             );
         }
@@ -473,5 +477,20 @@ impl Pipeline {
             output.chars().count(),
         );
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `cleanup.enabled = false` disables the whole pipeline, even with
+    /// everything else set up.
+    #[test]
+    fn cleanup_disabled_disables_the_pipeline() {
+        let mut config = config::Config::default();
+        config.cleanup.enabled = false;
+        let path = std::env::temp_dir().join("hydra-stt-profiles-test.toml");
+        assert!(Pipeline::from_config(&config, &path).unwrap().is_none());
     }
 }
