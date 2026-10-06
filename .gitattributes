@@ -1,0 +1,4 @@
+# Keep LF line endings on every platform, so files embedded with include_str!
+# (such as config.example.toml) are the same on Windows.
+* text=auto eol=lf
+*.wav binary
